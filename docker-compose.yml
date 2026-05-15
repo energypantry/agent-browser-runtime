@@ -1,0 +1,67 @@
+services:
+  broker:
+    build:
+      context: ./broker
+    container_name: browser-runtime-broker
+    init: true
+    environment:
+      NODE_ENV: production
+      BROKER_HOST: 0.0.0.0
+      BROKER_PORT: 17890
+      CDP_ENDPOINT: http://chrome-runtime:19222
+      NOVNC_URL: http://127.0.0.1:${NOVNC_HOST_PORT:-16080}/vnc.html?autoconnect=true&resize=remote
+      LEASE_DB_PATH: /data/leases.sqlite
+      ARTIFACTS_DIR: /artifacts
+      EXTRACTORS_DIR: /extractors
+      BOT_HUMANIZE_LEVEL: ${BOT_HUMANIZE_LEVEL:-standard}
+    volumes:
+      - ./data:/data
+      - ./artifacts:/artifacts
+      - ./extractors:/extractors:ro
+    ports:
+      - "127.0.0.1:${BROKER_HOST_PORT:-17890}:17890"
+    depends_on:
+      chrome-runtime:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "node", "src/healthcheck.js"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+    restart: unless-stopped
+
+  chrome-runtime:
+    build:
+      context: ./runtime/chrome
+    container_name: browser-runtime-chrome
+    init: true
+    shm_size: "2gb"
+    environment:
+      DISPLAY_NUM: 99
+      VNC_PORT: 5900
+      NOVNC_PORT: 6080
+      CDP_PORT: 9222
+      SCREEN_WIDTH: ${SCREEN_WIDTH:-1440}
+      SCREEN_HEIGHT: ${SCREEN_HEIGHT:-1000}
+      SCREEN_DEPTH: ${SCREEN_DEPTH:-24}
+      FINGERPRINT_SEED: ${FINGERPRINT_SEED:-1000}
+      FINGERPRINT_PLATFORM: ${FINGERPRINT_PLATFORM:-macos}
+      BROWSER_TIMEZONE: ${BROWSER_TIMEZONE:-Asia/Shanghai}
+      BOT_HUMANIZE_LEVEL: ${BOT_HUMANIZE_LEVEL:-enhanced}
+      BOT_RUNTIME_SIGNATURE: ${BOT_RUNTIME_SIGNATURE:-browser-runtime-skill:v2-scripting-humanize}
+      BROWSER_PROXY_SERVER: ${BROWSER_PROXY_SERVER:-}
+      BROWSER_PROXY_BYPASS_LIST: ${BROWSER_PROXY_BYPASS_LIST:-127.0.0.1,localhost,::1,broker,chrome-runtime}
+      BROWSER_RUNTIME_BROKER_WS: ${BROWSER_RUNTIME_BROKER_WS:-ws://broker:17890/extension}
+      BROWSER_EXTENSION_DIR: /opt/browser-runtime-extension
+    volumes:
+      - ./runtime/profile:/data/user-data
+      - ./extension:/opt/browser-runtime-extension:ro
+      - ./artifacts:/data/user-data/artifacts
+    ports:
+      - "127.0.0.1:${CDP_HOST_PORT:-19223}:19222"
+      - "127.0.0.1:${NOVNC_HOST_PORT:-16080}:6080"
+    restart: unless-stopped
+
+networks:
+  default:
+    name: browser-runtime-skill

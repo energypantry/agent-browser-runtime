@@ -1,0 +1,20 @@
+{
+  "manifest_version": 3,
+  "name": "Browser Runtime Skill Companion",
+  "version": "0.3.1",
+  "description": "Companion extension for browser-runtime-skill: real Tab Groups + Chrome debugger CDP bridge.",
+  "permissions": [
+    "tabs",
+    "tabGroups",
+    "storage",
+    "alarms",
+    "debugger",
+    "scripting"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  }
+}

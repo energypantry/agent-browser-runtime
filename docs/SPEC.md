@@ -1,0 +1,208 @@
+# Browser Runtime Skill SPEC v0.1
+
+## Goal
+
+Provide a compose-managed, persistent real-browser runtime that multiple agents can share safely. Agents never control Chrome directly; they acquire a lease from the broker, receive a real Chrome Tab Group workspace, run exploration or extractor jobs, and release the lease.
+
+## Resources folded into this design
+
+- LeadsDaddy runtime: Dockerized Chromium, CDP, noVNC, persistent profile, fingerprint/proxy/timezone launch contract, profile-signature reset, artifact retention, and humanized action primitives.
+- Signalist runtime pattern: explicit browser runtime contract, CDP readiness, humanize/pacing idea, artifacts-on-failure discipline.
+- ChromeForHermes prototype: `chrome.tabs.group`, `chrome.tabGroups.update`, `chrome.debugger.attach/sendCommand`, session-scoped tab groups.
+- Codex Chrome extension observation: native Chrome Tab Groups are practical when implemented by a companion extension, not by raw Playwright alone.
+
+## Deployment
+
+Docker Compose owns the runtime:
+
+```text
+browser-runtime-skill
+├─ broker          # HTTP/WS control plane, lease/job/artifacts/state
+└─ chrome-runtime  # Chromium + noVNC + persistent profile + companion extension
+```
+
+Host bindings are loopback-only:
+
+- Broker: `http://127.0.0.1:17890`
+- CDP proxy: `http://127.0.0.1:19223`
+- noVNC: `http://127.0.0.1:16080/vnc.html?autoconnect=true&resize=remote`
+
+## Control plane responsibilities
+
+### Broker
+
+- Persist leases, tabs, jobs, and artifacts in SQLite.
+- Accept agent requests over HTTP.
+- Maintain a WebSocket JSON-RPC channel to the Chrome companion extension.
+- Own TTL cleanup and release discipline.
+- Write artifacts under `/artifacts` and return stable local paths.
+
+### Companion extension
+
+- Execute Chrome-only operations:
+  - create real tabs
+  - create/update real Tab Groups
+  - attach Chrome debugger to background tabs
+  - execute CDP commands
+  - capture screenshot / HTML
+  - execute humanized warmup, scroll, and pause primitives via `chrome.scripting` so background-tab timer throttling does not stall jobs
+- Keep no durable business state. Broker is source of truth.
+
+### Chrome runtime
+
+- Keep persistent browser profile at `./runtime/profile`.
+- Expose noVNC for manual login/Captcha handoff.
+- Load companion extension from `./extension`.
+
+## Lease model
+
+A lease represents one agent/task workspace.
+
+Required fields:
+
+- `id`
+- `agentId`
+- `taskId`
+- `domain`
+- `mode`: `shared-context-tab-group | isolated-context | dedicated-runtime`
+- `chromeGroupId`
+- `status`: `allocated | released | expired`
+- `createdAt`, `expiresAt`
+
+MVP supports `shared-context-tab-group` only. Other modes are reserved API-compatible future work.
+
+## API v0
+
+### `GET /health`
+
+Returns broker and extension health.
+
+### `GET /status`
+
+Returns runtime endpoints, active leases, tabs, extension connection state, and default humanization level.
+
+### `POST /leases`
+
+Create a lease.
+
+```json
+{
+  "agentId": "vovo",
+  "taskId": "etsy-test-001",
+  "domain": "etsy.com",
+  "mode": "shared-context-tab-group",
+  "ttlMs": 1800000
+}
+```
+
+### `DELETE /leases/:id`
+
+Release a lease. By default closes owned tabs unless `?closeTabs=false`.
+
+### `POST /leases/:id/tabs`
+
+Create a tab in the lease's real Chrome Tab Group.
+
+```json
+{ "url": "https://example.com", "title": "Example", "waitUntilCompleteMs": 10000 }
+```
+
+### `POST /tabs/:tabId/navigate`
+
+Navigate an owned tab.
+
+### `POST /tabs/:tabId/html`
+
+Capture `document.documentElement.outerHTML` into an artifact.
+
+### `POST /tabs/:tabId/screenshot`
+
+Capture a JPEG/PNG screenshot into an artifact.
+
+### Humanization policy
+
+Task bodies can include `humanize` / `humanizePolicy` or the CLI flag `--humanize minimal|standard|enhanced|off`. The broker applies task-level pacing around open/navigate/html/screenshot; the companion extension executes low-level mousemove, wheel/scroll, and pause primitives. Defaults come from `BOT_HUMANIZE_LEVEL`. Avoid page-side `setTimeout` animation loops in background tabs; Chrome can throttle them heavily.
+
+### `POST /jobs/fetch-page`
+
+One-shot MVP workflow:
+
+1. acquire lease
+2. create grouped tab
+3. navigate/wait
+4. capture HTML and optional screenshot
+5. optionally release/close
+
+### `GET /jobs` / `GET /jobs/:id`
+
+Expose recent jobs plus job logs and related artifacts for internal observability.
+
+### Artifact management
+
+`GET /artifacts`, `GET /artifacts/:id`, `GET /artifacts/:id/download`, `DELETE /artifacts/:id`, and `POST /artifacts/cleanup` make evidence discoverable and cleanable without shelling into directories. Cleanup is dry-run by default.
+
+### `POST /jobs/extract`
+
+Runs `/extractors/<name>.extract.js`; extractor must export `extract({ url, finalUrl, pageHtml, tab, params, attempt })`. It may export `schema` / `paramsSchema` for simple params validation. Broker supports `maxAttempts` / `retries` and writes `error` artifacts on failed attempts. The broker writes a JSON result artifact and can optionally save HTML/screenshot artifacts.
+
+CLI:
+
+```bash
+./cli/brs.js extract example.extract.js https://example.com --agent vovo --task extractor-smoke --screenshot --save-html
+```
+
+## Extension JSON-RPC
+
+Broker sends:
+
+```json
+{ "jsonrpc": "2.0", "id": 1, "method": "tabs.create", "params": {} }
+```
+
+Extension replies:
+
+```json
+{ "jsonrpc": "2.0", "id": 1, "result": {} }
+```
+
+Errors use JSON-RPC style `{ error: { code, message } }`.
+
+## Artifact policy
+
+Artifacts live outside git:
+
+```text
+artifacts/YYYY-MM-DD/<leaseId>/<kind>-<timestamp>.<ext>
+```
+
+Never store credentials or raw secrets intentionally. Site extractors should redact outputs before returning user-facing summaries.
+
+## MVP acceptance test
+
+Preferred full regression test:
+
+```bash
+cp .env.example .env
+./scripts/smoke-test.sh
+```
+
+Manual equivalent:
+
+```bash
+cp .env.example .env
+docker compose up --build -d
+./cli/brs.js status
+./cli/brs.js fetch https://example.com --agent vovo --task smoke --screenshot --humanize enhanced
+```
+
+Expected:
+
+- broker healthy
+- extension connected
+- `status.humanize.level` is present
+- a real Chrome Tab Group appears in noVNC
+- HTML artifact exists
+- screenshot artifact exists
+- release closes the tab unless `--keep-open`
+- extractor smoke returns `Example Domain` from `example.extract.js`
+- leased open/release creates a real grouped tab and closes it on release

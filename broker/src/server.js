@@ -1,0 +1,536 @@
+import { mkdir, writeFile, stat, readFile, unlink } from 'node:fs/promises';
+import { basename, join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import Fastify from 'fastify';
+import websocket from '@fastify/websocket';
+import { Store } from './store.js';
+import { ExtensionRpc } from './extension-rpc.js';
+
+const host = process.env.BROKER_HOST || '0.0.0.0';
+const port = Number(process.env.BROKER_PORT || 17890);
+const cdpEndpoint = process.env.CDP_ENDPOINT || 'http://chrome-runtime:19222';
+const novncUrl = process.env.NOVNC_URL || null;
+const leaseDbPath = process.env.LEASE_DB_PATH || '/data/leases.sqlite';
+const artifactsDir = process.env.ARTIFACTS_DIR || '/artifacts';
+const extractorsDir = process.env.EXTRACTORS_DIR || '/extractors';
+const defaultHumanizeLevel = String(process.env.BOT_HUMANIZE_LEVEL || 'standard').trim().toLowerCase();
+
+const app = Fastify({ logger: true });
+await app.register(websocket);
+
+const store = new Store(leaseDbPath);
+const extension = new ExtensionRpc(app.log);
+
+app.get('/extension', { websocket: true }, (socket) => {
+  app.log.info('Chrome companion extension connected');
+  extension.attach(socket);
+});
+
+app.get('/health', async () => ({
+  ok: true,
+  cdpEndpoint,
+  extensionConnected: extension.connected,
+}));
+
+app.get('/status', async () => ({
+  ok: true,
+  cdpEndpoint,
+  novncUrl,
+  extensionConnected: extension.connected,
+  humanize: { level: defaultHumanizeLevel },
+  leases: store.listLeases({ activeOnly: true }).map((lease) => ({ ...lease, tabs: store.listTabs(lease.id) })),
+}));
+
+
+app.get('/artifacts', async (request) => ({
+  artifacts: store.listArtifacts({
+    leaseId: request.query?.leaseId || null,
+    kind: request.query?.kind || null,
+    before: request.query?.before || null,
+    limit: readPositiveNumber(request.query?.limit, 300),
+  }),
+}));
+
+app.get('/artifacts/:id', async (request, reply) => {
+  const artifact = store.getArtifact(request.params.id);
+  if (!artifact) return reply.code(404).send({ ok: false, error: 'ARTIFACT_NOT_FOUND' });
+  return artifact;
+});
+
+app.get('/artifacts/:id/download', async (request, reply) => {
+  const artifact = store.getArtifact(request.params.id);
+  if (!artifact) return reply.code(404).send({ ok: false, error: 'ARTIFACT_NOT_FOUND' });
+  const localPath = safeArtifactPath(artifact.path);
+  const data = await readFile(localPath);
+  reply.header('content-type', artifact.mimeType || 'application/octet-stream');
+  reply.header('content-disposition', `attachment; filename="${basename(localPath)}"`);
+  return reply.send(data);
+});
+
+app.delete('/artifacts/:id', async (request, reply) => {
+  const artifact = store.getArtifact(request.params.id);
+  if (!artifact) return reply.code(404).send({ ok: false, error: 'ARTIFACT_NOT_FOUND' });
+  await unlink(safeArtifactPath(artifact.path)).catch((error) => app.log.warn({ error, artifactId: artifact.id }, 'artifact file delete failed'));
+  store.deleteArtifact(artifact.id);
+  return { ok: true, deleted: artifact.id };
+});
+
+app.post('/artifacts/cleanup', async (request) => {
+  const body = request.body || {};
+  const olderThanDays = readPositiveNumber(body.olderThanDays, 7);
+  const before = new Date(Date.now() - olderThanDays * 24 * 60 * 60 * 1000).toISOString();
+  const dryRun = body.dryRun !== false;
+  const candidates = store.listArtifacts({ before, limit: readPositiveNumber(body.limit, 1000) });
+  let bytes = 0;
+  const deleted = [];
+  for (const artifact of candidates) {
+    bytes += Number(artifact.bytes || 0);
+    if (!dryRun) {
+      await unlink(safeArtifactPath(artifact.path)).catch((error) => app.log.warn({ error, artifactId: artifact.id }, 'artifact cleanup file delete failed'));
+      store.deleteArtifact(artifact.id);
+      deleted.push(artifact.id);
+    }
+  }
+  return { ok: true, dryRun, before, candidates: candidates.length, bytes, deleted };
+});
+
+app.get('/jobs', async (request) => ({ jobs: store.listJobs({ status: request.query?.status || null, limit: readPositiveNumber(request.query?.limit, 100) }) }));
+
+app.get('/jobs/:id', async (request, reply) => {
+  const job = store.getJob(request.params.id);
+  if (!job) return reply.code(404).send({ ok: false, error: 'JOB_NOT_FOUND' });
+  return { ...job, logs: store.listJobLogs(job.id), artifacts: store.listArtifacts({ leaseId: job.leaseId, limit: 100 }) };
+});
+
+app.post('/leases', async (request) => {
+  const body = request.body || {};
+  const now = Date.now();
+  const domain = body.domain ? String(body.domain) : inferDomain(body.url);
+  const id = body.id ? sanitizeId(String(body.id)) : `lease_${now}_${Math.random().toString(36).slice(2, 8)}`;
+  const ttlMs = readPositiveNumber(body.ttlMs, 30 * 60 * 1000);
+  const title = body.title || compactTitle([body.agentId || 'agent', body.taskId || id, domain].filter(Boolean).join(' / '));
+  const lease = {
+    id,
+    agentId: String(body.agentId || 'unknown-agent'),
+    taskId: String(body.taskId || id),
+    domain,
+    mode: String(body.mode || 'shared-context-tab-group'),
+    chromeGroupId: null,
+    title,
+    color: body.color || colorFor(id),
+    status: 'allocated',
+    createdAt: new Date(now).toISOString(),
+    expiresAt: new Date(now + ttlMs).toISOString(),
+  };
+  store.createLease(lease);
+  return { ...lease, tabs: [] };
+});
+
+app.get('/leases', async () => store.listLeases({ activeOnly: false }));
+
+app.delete('/leases/:id', async (request, reply) => {
+  const lease = requireLease(request.params.id, reply);
+  if (!lease) return reply;
+  const closeTabs = request.query?.closeTabs !== 'false';
+  const tabs = store.listTabs(lease.id).filter((tab) => tab.status !== 'closed');
+  if (closeTabs) {
+    for (const tab of tabs) {
+      await extension.call('tabs.close', { tabId: tab.id }).catch((error) => app.log.warn({ error, tabId: tab.id }, 'tab close failed'));
+      store.closeTab(tab.id);
+    }
+  }
+  store.releaseLease(lease.id);
+  return { ok: true, released: lease.id, closedTabs: closeTabs ? tabs.map((tab) => tab.id) : [] };
+});
+
+app.post('/leases/:id/tabs', async (request, reply) => {
+  const lease = requireLease(request.params.id, reply);
+  if (!lease) return reply;
+  const body = request.body || {};
+  const result = await extension.call('tabs.create', {
+    url: body.url || 'about:blank',
+    groupId: lease.chromeGroupId,
+    groupTitle: lease.title,
+    groupColor: lease.color,
+    active: Boolean(body.active),
+    waitUntilCompleteMs: readPositiveNumber(body.waitUntilCompleteMs, 15000),
+  }, { timeoutMs: readPositiveNumber(body.timeoutMs, 45000) });
+  if (result.chromeGroupId != null && result.chromeGroupId !== lease.chromeGroupId) store.updateLeaseGroup(lease.id, result.chromeGroupId);
+  store.addTab({
+    id: result.tab.id,
+    leaseId: lease.id,
+    url: result.tab.url || body.url || null,
+    title: result.tab.title || body.title || null,
+    status: 'open',
+    createdAt: new Date().toISOString(),
+  });
+  await humanizeTab(result.tab.id, body, 'open');
+  return { lease: store.getLease(lease.id), tab: result.tab };
+});
+
+app.post('/tabs/:tabId/navigate', async (request) => {
+  const tabId = Number(request.params.tabId);
+  const body = request.body || {};
+  const result = await extension.call('tabs.navigate', {
+    tabId,
+    url: String(body.url),
+    waitUntilCompleteMs: readPositiveNumber(body.waitUntilCompleteMs, 15000),
+  }, { timeoutMs: readPositiveNumber(body.timeoutMs, 45000) });
+  await humanizeTab(tabId, body, 'navigate');
+  return result;
+});
+
+app.post('/tabs/:tabId/html', async (request) => {
+  const tabId = Number(request.params.tabId);
+  const body = request.body || {};
+  await humanizeTab(tabId, body, 'before-html');
+  const result = await extension.call('page.html', { tabId }, { timeoutMs: readPositiveNumber(body.timeoutMs, 30000) });
+  return writeArtifact({ leaseId: body.leaseId, tabId, kind: 'html', ext: 'html', mimeType: 'text/html', data: result.html || '' });
+});
+
+app.post('/tabs/:tabId/screenshot', async (request) => {
+  const tabId = Number(request.params.tabId);
+  const body = request.body || {};
+  await humanizeTab(tabId, body, 'before-screenshot');
+  const result = await extension.call('screenshot.capture', {
+    tabId,
+    fullPage: Boolean(body.fullPage),
+    format: body.format || 'jpeg',
+    quality: readPositiveNumber(body.quality, 80),
+  }, { timeoutMs: readPositiveNumber(body.timeoutMs, 45000) });
+  const ext = result.format === 'png' ? 'png' : 'jpg';
+  return writeArtifact({ leaseId: body.leaseId, tabId, kind: 'screenshot', ext, mimeType: `image/${ext === 'jpg' ? 'jpeg' : 'png'}`, base64: result.data });
+});
+
+
+app.post('/jobs/extract', async (request, reply) => {
+  const body = request.body || {};
+  if (!body.url) return reply.code(400).send({ ok: false, error: 'url is required' });
+  const extractorName = sanitizeExtractorName(body.extractor || 'example.extract.js');
+  const extractorPath = join(extractorsDir, extractorName);
+  const extractorModule = await import(`${pathToFileURL(extractorPath).href}?t=${Date.now()}`);
+  const extract = extractorModule.extract || extractorModule.default;
+  if (typeof extract !== 'function') return reply.code(400).send({ ok: false, error: `Extractor ${extractorName} must export extract()` });
+
+  let params;
+  try {
+    params = validateParams(body.params || {}, extractorModule.schema || extractorModule.paramsSchema || null);
+  } catch (error) {
+    return reply.code(400).send({ ok: false, error: error.message, details: error.details || null });
+  }
+
+  const maxAttempts = readRetryAttempts(body);
+  const nowIso = new Date().toISOString();
+  const jobId = `extract_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  store.createJob({
+    id: jobId,
+    kind: 'extract',
+    status: 'queued',
+    agentId: String(body.agentId || 'agent'),
+    taskId: String(body.taskId || `extract:${extractorName}`),
+    url: String(body.url),
+    extractor: extractorName,
+    attempts: 0,
+    maxAttempts,
+    createdAt: nowIso,
+    updatedAt: nowIso,
+  });
+
+  const lease = store.createLease({
+    id: jobId,
+    agentId: String(body.agentId || 'agent'),
+    taskId: String(body.taskId || `extract:${extractorName}`),
+    domain: inferDomain(body.url),
+    mode: String(body.mode || 'shared-context-tab-group'),
+    chromeGroupId: null,
+    title: compactTitle(body.title || `${body.agentId || 'agent'} / ${extractorName}`),
+    color: body.color || colorFor(`${body.url}:${extractorName}`),
+    status: 'allocated',
+    createdAt: nowIso,
+    expiresAt: new Date(Date.now() + readPositiveNumber(body.ttlMs, 15 * 60 * 1000)).toISOString(),
+  });
+  store.updateJob(jobId, { leaseId: lease.id });
+
+  const artifacts = [];
+  let created = null;
+  let lastError = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    created = null;
+    store.updateJob(jobId, { status: 'running', attempts: attempt });
+    addJobLog(jobId, 'info', 'attempt.start', { attempt, maxAttempts, url: body.url, extractor: extractorName });
+    try {
+      const currentLease = store.getLease(lease.id);
+      created = await extension.call('tabs.create', {
+        url: body.url,
+        groupId: currentLease?.chromeGroupId || undefined,
+        groupTitle: lease.title,
+        groupColor: lease.color,
+        active: Boolean(body.active),
+        waitUntilCompleteMs: readPositiveNumber(body.waitUntilCompleteMs, 15000),
+      }, { timeoutMs: readPositiveNumber(body.timeoutMs, 60000) });
+      if (created.chromeGroupId != null && created.chromeGroupId !== currentLease?.chromeGroupId) store.updateLeaseGroup(lease.id, created.chromeGroupId);
+      store.addTab({ id: created.tab.id, leaseId: lease.id, url: created.tab.url || body.url, title: created.tab.title, status: 'open', createdAt: new Date().toISOString() });
+
+      await humanizeTab(created.tab.id, body, 'job-open');
+      const htmlResult = await extension.call('page.html', { tabId: created.tab.id }, { timeoutMs: readPositiveNumber(body.htmlTimeoutMs, 30000) });
+      const result = await extract({
+        url: body.url,
+        finalUrl: created.tab.url,
+        pageHtml: htmlResult.html || '',
+        tab: created.tab,
+        params,
+        attempt,
+      });
+      artifacts.push(await writeArtifact({ leaseId: lease.id, tabId: created.tab.id, kind: 'extract-result', ext: 'json', mimeType: 'application/json', data: JSON.stringify(result ?? null, null, 2) }));
+      if (body.saveHtml) artifacts.push(await writeArtifact({ leaseId: lease.id, tabId: created.tab.id, kind: 'html', ext: 'html', mimeType: 'text/html', data: htmlResult.html || '' }));
+      if (body.screenshot) {
+        await humanizeTab(created.tab.id, body, 'before-screenshot');
+        const shot = await extension.call('screenshot.capture', { tabId: created.tab.id, fullPage: Boolean(body.fullPage), format: body.format || 'jpeg', quality: readPositiveNumber(body.quality, 80) }, { timeoutMs: readPositiveNumber(body.screenshotTimeoutMs, 45000) });
+        artifacts.push(await writeArtifact({ leaseId: lease.id, tabId: created.tab.id, kind: 'screenshot', ext: shot.format === 'png' ? 'png' : 'jpg', mimeType: shot.format === 'png' ? 'image/png' : 'image/jpeg', base64: shot.data }));
+      }
+      if (!body.keepOpen) {
+        await extension.call('tabs.close', { tabId: created.tab.id }).catch(() => {});
+        store.closeTab(created.tab.id);
+        store.releaseLease(lease.id);
+      }
+      store.updateJob(jobId, { status: 'success', finishedAt: new Date().toISOString(), error: null });
+      addJobLog(jobId, 'info', 'attempt.success', { attempt, artifactCount: artifacts.length });
+      return { job: store.getJob(jobId), lease: store.getLease(lease.id), tab: created.tab, extractor: extractorName, result, artifacts };
+    } catch (error) {
+      lastError = normalizeError(error);
+      addJobLog(jobId, 'error', 'attempt.failed', { attempt, error: lastError });
+      if (created?.tab?.id) {
+        artifacts.push(await writeArtifact({ leaseId: lease.id, tabId: created.tab.id, kind: 'error', ext: 'json', mimeType: 'application/json', data: JSON.stringify({ jobId, attempt, maxAttempts, url: body.url, extractor: extractorName, error: lastError }, null, 2) }));
+        await extension.call('tabs.close', { tabId: created.tab.id }).catch(() => {});
+        store.closeTab(created.tab.id);
+        store.updateLeaseGroup(lease.id, null);
+      }
+      if (attempt < maxAttempts) await sleep(readPositiveNumber(body.retryDelayMs, 750) * attempt);
+    }
+  }
+
+  store.releaseLease(lease.id, 'released');
+  store.updateJob(jobId, { status: 'failed', finishedAt: new Date().toISOString(), error: JSON.stringify(lastError) });
+  return reply.code(500).send({ ok: false, job: store.getJob(jobId), lease: store.getLease(lease.id), extractor: extractorName, error: lastError, artifacts });
+});
+
+app.post('/jobs/fetch-page', async (request) => {
+  const body = request.body || {};
+  if (!body.url) throw new Error('url is required');
+  const lease = store.createLease({
+    id: `job_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    agentId: String(body.agentId || 'agent'),
+    taskId: String(body.taskId || 'fetch-page'),
+    domain: inferDomain(body.url),
+    mode: String(body.mode || 'shared-context-tab-group'),
+    chromeGroupId: null,
+    title: compactTitle(body.title || `${body.agentId || 'agent'} / ${inferDomain(body.url)}`),
+    color: body.color || colorFor(String(body.url)),
+    status: 'allocated',
+    createdAt: new Date().toISOString(),
+    expiresAt: new Date(Date.now() + readPositiveNumber(body.ttlMs, 15 * 60 * 1000)).toISOString(),
+  });
+
+  const created = await extension.call('tabs.create', {
+    url: body.url,
+    groupTitle: lease.title,
+    groupColor: lease.color,
+    active: Boolean(body.active),
+    waitUntilCompleteMs: readPositiveNumber(body.waitUntilCompleteMs, 15000),
+  }, { timeoutMs: readPositiveNumber(body.timeoutMs, 60000) });
+  store.updateLeaseGroup(lease.id, created.chromeGroupId);
+  store.addTab({ id: created.tab.id, leaseId: lease.id, url: created.tab.url || body.url, title: created.tab.title, status: 'open', createdAt: new Date().toISOString() });
+
+  await humanizeTab(created.tab.id, body, 'job-open');
+  const htmlResult = await extension.call('page.html', { tabId: created.tab.id }, { timeoutMs: 30000 });
+  const artifacts = [await writeArtifact({ leaseId: lease.id, tabId: created.tab.id, kind: 'html', ext: 'html', mimeType: 'text/html', data: htmlResult.html || '' })];
+  if (body.screenshot !== false) {
+    await humanizeTab(created.tab.id, body, 'before-screenshot');
+    const shot = await extension.call('screenshot.capture', { tabId: created.tab.id, fullPage: Boolean(body.fullPage), format: body.format || 'jpeg', quality: readPositiveNumber(body.quality, 80) }, { timeoutMs: 45000 });
+    artifacts.push(await writeArtifact({ leaseId: lease.id, tabId: created.tab.id, kind: 'screenshot', ext: shot.format === 'png' ? 'png' : 'jpg', mimeType: shot.format === 'png' ? 'image/png' : 'image/jpeg', base64: shot.data }));
+  }
+  if (!body.keepOpen) {
+    await extension.call('tabs.close', { tabId: created.tab.id }).catch(() => {});
+    store.closeTab(created.tab.id);
+    store.releaseLease(lease.id);
+  }
+  return { lease: store.getLease(lease.id), tab: created.tab, artifacts };
+});
+
+
+async function humanizeTab(tabId, body = {}, stage = 'action') {
+  const policy = buildHumanizePolicy(body.humanizePolicy || body.humanize || {});
+  if (body.humanize === false || policy.level === 'off') return null;
+  try {
+    if (stage === 'open' || stage === 'navigate' || stage === 'job-open') {
+      await extension.call('humanize.warmup', { tabId, policy }, { timeoutMs: readPositiveNumber(body.humanizeTimeoutMs, 60000) });
+      if (stage === 'job-open') await extension.call('humanize.scroll', { tabId, policy }, { timeoutMs: readPositiveNumber(body.humanizeTimeoutMs, 60000) });
+      return { ok: true, stage, policy };
+    }
+    if (stage === 'before-html') {
+      await extension.call('humanize.pause', { policy, minMs: policy.actionPauseMinMs, maxMs: policy.actionPauseMaxMs }, { timeoutMs: readPositiveNumber(body.humanizeTimeoutMs, 60000) });
+      return { ok: true, stage, policy };
+    }
+    if (stage === 'before-screenshot') {
+      await extension.call('humanize.scroll', { tabId, policy, count: 1 }, { timeoutMs: readPositiveNumber(body.humanizeTimeoutMs, 60000) });
+      await extension.call('humanize.pause', { policy, minMs: policy.microRestMinMs, maxMs: policy.microRestMaxMs }, { timeoutMs: readPositiveNumber(body.humanizeTimeoutMs, 60000) });
+      return { ok: true, stage, policy };
+    }
+  } catch (error) {
+    app.log.warn({ error, errorMessage: error?.message, errorCode: error?.code, tabId, stage }, 'humanize action failed');
+  }
+  return null;
+}
+
+function buildHumanizePolicy(input = {}) {
+  const namedProfiles = {
+    minimal: { level: 'minimal', actionPauseMinMs: 80, actionPauseMaxMs: 260, scrollCountMin: 0, scrollCountMax: 1, microRestProbability: 0.05 },
+    standard: { level: 'standard', actionPauseMinMs: 180, actionPauseMaxMs: 700, scrollCountMin: 1, scrollCountMax: 3, microRestProbability: 0.18 },
+    enhanced: { level: 'enhanced', actionPauseMinMs: 350, actionPauseMaxMs: 1200, scrollCountMin: 2, scrollCountMax: 5, microRestProbability: 0.28, microRestMinMs: 1200, microRestMaxMs: 3200 },
+  };
+  const requestedLevel = typeof input === 'string' ? input : input.level;
+  const level = String(requestedLevel || defaultHumanizeLevel || 'standard').toLowerCase();
+  const base = namedProfiles[level] || namedProfiles.standard;
+  return { ...base, ...(typeof input === 'object' && input ? input : {}), level };
+}
+
+
+function readRetryAttempts(body = {}) {
+  if (body.maxAttempts != null) return Math.max(1, Math.min(5, Number(body.maxAttempts) || 1));
+  if (body.retries != null) return Math.max(1, Math.min(5, (Number(body.retries) || 0) + 1));
+  if (body.retry === true) return 2;
+  return 1;
+}
+
+function validateParams(params = {}, schema = null) {
+  if (!schema) return params;
+  const source = params && typeof params === 'object' && !Array.isArray(params) ? { ...params } : {};
+  const normalized = { ...source };
+  const objectSchema = schema.type === 'object' || schema.properties ? schema : { type: 'object', properties: schema };
+  const properties = objectSchema.properties || {};
+  const required = new Set(objectSchema.required || []);
+  const errors = [];
+
+  for (const [key, definition] of Object.entries(properties)) {
+    const rule = typeof definition === 'string' ? { type: definition } : (definition || {});
+    if (normalized[key] == null && Object.prototype.hasOwnProperty.call(rule, 'default')) normalized[key] = rule.default;
+    if (required.has(key) && normalized[key] == null) {
+      errors.push(`${key} is required`);
+      continue;
+    }
+    if (normalized[key] != null && rule.type && !matchesType(normalized[key], rule.type)) errors.push(`${key} must be ${rule.type}`);
+    if (Array.isArray(rule.enum) && normalized[key] != null && !rule.enum.includes(normalized[key])) errors.push(`${key} must be one of ${rule.enum.join(', ')}`);
+  }
+
+  if (objectSchema.additionalProperties === false) {
+    for (const key of Object.keys(normalized)) {
+      if (!Object.prototype.hasOwnProperty.call(properties, key)) errors.push(`${key} is not allowed`);
+    }
+  }
+
+  if (errors.length) {
+    const error = new Error('invalid extractor params');
+    error.details = errors;
+    throw error;
+  }
+  return normalized;
+}
+
+function matchesType(value, type) {
+  if (Array.isArray(type)) return type.some((item) => matchesType(value, item));
+  if (type === 'array') return Array.isArray(value);
+  if (type === 'integer') return Number.isInteger(value);
+  if (type === 'number') return typeof value === 'number' && Number.isFinite(value);
+  if (type === 'object') return value && typeof value === 'object' && !Array.isArray(value);
+  if (type === 'boolean') return typeof value === 'boolean';
+  if (type === 'string') return typeof value === 'string';
+  return true;
+}
+
+function addJobLog(jobId, level, event, data = null) {
+  store.addJobLog({
+    id: `log_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    jobId,
+    level,
+    event,
+    data,
+    createdAt: new Date().toISOString(),
+  });
+}
+
+function normalizeError(error) {
+  return {
+    name: error?.name || 'Error',
+    message: error?.message || String(error),
+    code: error?.code || null,
+    stack: error?.stack ? String(error.stack).split('\n').slice(0, 12).join('\n') : null,
+  };
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms) || 0)));
+}
+
+function safeArtifactPath(path) {
+  const root = resolve(artifactsDir);
+  const local = resolve(String(path));
+  if (local !== root && !local.startsWith(`${root}/`)) throw Object.assign(new Error('artifact path escapes artifacts dir'), { code: 'BAD_ARTIFACT_PATH' });
+  return local;
+}
+
+async function writeArtifact({ leaseId, tabId, kind, ext, mimeType, data, base64 }) {
+  const day = new Date().toISOString().slice(0, 10);
+  const dir = join(artifactsDir, day, sanitizeId(leaseId || 'unleased'));
+  await mkdir(dir, { recursive: true });
+  const id = `${kind}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const path = join(dir, `${id}.${ext}`);
+  const payload = base64 ? Buffer.from(base64, 'base64') : String(data ?? '');
+  await writeFile(path, payload);
+  const info = await stat(path);
+  const artifact = { id, leaseId, tabId, kind, path: resolve(path), mimeType, bytes: info.size, createdAt: new Date().toISOString() };
+  store.addArtifact(artifact);
+  return artifact;
+}
+
+
+function sanitizeExtractorName(value) {
+  const name = String(value).replace(/^\/+/, '');
+  if (!/^[a-zA-Z0-9_.-]+\.extract\.js$/.test(name)) throw new Error('extractor must match <name>.extract.js');
+  return name;
+}
+
+function requireLease(id, reply) {
+  const lease = store.getLease(id);
+  if (!lease || lease.status !== 'allocated') {
+    reply.code(404).send({ ok: false, error: 'LEASE_NOT_FOUND' });
+    return null;
+  }
+  return lease;
+}
+
+function inferDomain(url) {
+  if (!url) return null;
+  try { return new URL(url).hostname; } catch { return null; }
+}
+
+function sanitizeId(value) {
+  return String(value).replace(/[^a-zA-Z0-9_.-]/g, '_').slice(0, 96);
+}
+
+function compactTitle(value) {
+  return String(value).replace(/\s+/g, ' ').trim().slice(0, 48) || 'agent-task';
+}
+
+function readPositiveNumber(value, fallback) {
+  const num = Number(value);
+  return Number.isFinite(num) && num > 0 ? num : fallback;
+}
+
+function colorFor(seed) {
+  const colors = ['grey', 'blue', 'red', 'yellow', 'green', 'pink', 'purple', 'cyan', 'orange'];
+  let hash = 0;
+  for (const ch of String(seed)) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
+  return colors[hash % colors.length];
+}
+
+await app.listen({ host, port });

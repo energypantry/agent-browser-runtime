@@ -1,0 +1,15 @@
+{
+  "name": "browser-runtime-broker",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node --no-warnings src/server.js",
+    "test": "node --test test/*.test.js",
+    "healthcheck": "node src/healthcheck.js"
+  },
+  "dependencies": {
+    "@fastify/websocket": "^11.2.0",
+    "fastify": "^5.2.1"
+  }
+}

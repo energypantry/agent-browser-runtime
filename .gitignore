@@ -1,0 +1,9 @@
+.env
+artifacts/**
+data/**
+runtime/profile/**
+!artifacts/.gitkeep
+!data/.gitkeep
+node_modules/**
+**/node_modules/**
+.DS_Store
