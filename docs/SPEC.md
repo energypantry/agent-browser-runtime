@@ -66,6 +66,7 @@ Default capabilities:
 - Chromium major/full version is detected from the runtime binary by default. `BRS_CHROME_MAJOR` and `BRS_CHROME_FULL_VERSION` intentionally override the detected version when set.
 - `BRS_FINGERPRINT_HEADERS_ENABLED=1`: apply generated headers plus optional `BRS_EXTRA_HTTP_HEADERS_JSON` through CDP before first navigation.
 - `BRS_FINGERPRINT_PATCHES_ENABLED=1`: inject `stealth-content.js` in the main world at `document_start`; default evasions cover webdriver, languages, platform, vendor, plugins/mimeTypes, Chrome app/runtime stubs, media codecs, WebGL, canvas, and audio.
+- `BRS_STEALTH_EXCLUDED_HOSTS=accounts.google.com`: skip CDP header/UA overrides and content-script patches for high-trust login hosts where a spoofed browser identity is more likely to hurt than help.
 - `BRS_CANVAS_NOISE_ENABLED=1` / `BRS_AUDIO_NOISE_ENABLED=1`: patch common canvas/audio fingerprint surfaces.
 - `BRS_LOCALE`, `BRS_STEALTH_TIMEZONE`, `BRS_USER_AGENT`, `BRS_PLATFORM`, `BRS_WEBGL_VENDOR`, and `BRS_WEBGL_RENDERER`: optional explicit profile overrides.
 - `BOT_HUMANIZE_LEVEL` and per-job `--humanize`: task-level pacing, mousemove, scroll, and pauses.
@@ -73,6 +74,8 @@ Default capabilities:
 - `BRS_TLS_GATEWAY_ENABLED=1`: TLS gateway capability is enabled by default, but it is only active when `BRS_TLS_GATEWAY_PROXY_SERVER` points at a real proxy/gateway. When active, Chromium receives `--proxy-server` and `--disable-quic`. Status can read gateway health/stats with `BRS_TLS_GATEWAY_BASE_URL`, `BRS_TLS_GATEWAY_HEALTH_URL`, or `BRS_TLS_GATEWAY_STATS_URL`.
 
 The default profile is `BRS_STEALTH_PROFILE=standard`. Set `BRS_STEALTH_ENABLED=0` for debugging or site compatibility isolation.
+
+Profile reset policy: `BOT_RUNTIME_SIGNATURE` changes no longer wipe the persisted browser profile by default. Set `BRS_RESET_PROFILE_ON_SIGNATURE_CHANGE=1` when you intentionally want a clean profile after changing low-level browser identity settings.
 
 ## Lease model
 

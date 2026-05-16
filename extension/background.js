@@ -175,6 +175,7 @@ function shouldApplyStealthOverrides(url) {
   const policy = stealthPolicy();
   if (!policy.enabled) return false;
   if (!url || url === 'about:blank' || url.startsWith('chrome://') || url.startsWith('chrome-extension://')) return false;
+  if (isStealthExcludedUrl(url, policy)) return false;
   const extraHeaders = policy.extraHeaders && typeof policy.extraHeaders === 'object' ? policy.extraHeaders : {};
   return Boolean(
     (policy.headersEnabled && policy.acceptLanguage) ||
@@ -184,6 +185,28 @@ function shouldApplyStealthOverrides(url) {
     policy.timezone ||
     policy.platform
   );
+}
+
+function isStealthExcludedUrl(url, policy = stealthPolicy()) {
+  const excludedHosts = Array.isArray(policy.excludedHosts) ? policy.excludedHosts : [];
+  if (!excludedHosts.length) return false;
+  try {
+    const hostname = new URL(url).hostname;
+    return excludedHosts.some((pattern) => hostMatches(hostname, pattern));
+  } catch {
+    return false;
+  }
+}
+
+function hostMatches(hostname, pattern) {
+  const host = String(hostname || '').toLowerCase();
+  const rule = String(pattern || '').trim().toLowerCase();
+  if (!host || !rule) return false;
+  if (rule.startsWith('*.')) {
+    const suffix = rule.slice(1);
+    return host.endsWith(suffix) && host !== suffix.slice(1);
+  }
+  return host === rule || host.endsWith(`.${rule}`);
 }
 
 async function applyStealthCdpOverrides(tabId) {

@@ -36,6 +36,7 @@ It now also reports the loaded runtime fingerprint summary from the extension, i
 The runtime now treats stealth/fingerprint behavior as a default-on policy layer:
 
 - extension content script patches common browser-surface signals at `document_start`, including webdriver, languages, platform, vendor, plugins/mimeTypes, Chrome app/runtime stubs, media codecs, WebGL, canvas, and audio
+- high-trust login domains can be excluded from the consistency layer with `BRS_STEALTH_EXCLUDED_HOSTS`; `accounts.google.com` is excluded by default
 - CDP applies `Accept-Language`, UA/UA-CH metadata, extra headers, locale, and timezone before first real navigation
 - launch config generates a coherent seed-based browser profile by default: user agent, UA-CH, Accept-Language, platform, WebGL, hardware concurrency, device memory, and touch-points move together
 - Chrome version is detected from the runtime binary by default; set `BRS_CHROME_MAJOR` or `BRS_CHROME_FULL_VERSION` only when you intentionally need a pinned advertised version
@@ -44,6 +45,7 @@ The runtime now treats stealth/fingerprint behavior as a default-on policy layer
 - TLS gateway support is enabled as a capability, becomes active when `BRS_TLS_GATEWAY_PROXY_SERVER` is set, adds Chromium proxy args with QUIC disabled, and can expose `/health` and `/stats` through `./cli/brs.js status`
 
 This is compatibility infrastructure for real-browser agent work, not a guarantee that any platform will accept automation. Use noVNC for login, Captcha, slider, or account-safety handoff.
+Runtime upgrades preserve the persisted browser profile by default; set `BRS_RESET_PROFILE_ON_SIGNATURE_CHANGE=1` only when you intentionally want to wipe cookies/profile state after a signature change.
 
 ## Session probes
 

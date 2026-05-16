@@ -3,6 +3,19 @@
   const stealth = config.stealth || {};
   if (!stealth.enabled || !stealth.patchesEnabled) return;
 
+  const hostMatches = (hostname, pattern) => {
+    const host = String(hostname || '').toLowerCase();
+    const rule = String(pattern || '').trim().toLowerCase();
+    if (!host || !rule) return false;
+    if (rule.startsWith('*.')) {
+      const suffix = rule.slice(1);
+      return host.endsWith(suffix) && host !== suffix.slice(1);
+    }
+    return host === rule || host.endsWith(`.${rule}`);
+  };
+  const excludedHosts = Array.isArray(stealth.excludedHosts) ? stealth.excludedHosts : [];
+  if (excludedHosts.some((pattern) => hostMatches(globalThis.location?.hostname, pattern))) return;
+
   const defineGetter = (obj, key, getter) => {
     try {
       Object.defineProperty(obj, key, { get: getter, configurable: true });

@@ -9,6 +9,13 @@ USER_DATA_DIR="/data/user-data"
 RUNTIME_SIGNATURE_FILE="${USER_DATA_DIR}/.runtime-signature"
 mkdir -p "${USER_DATA_DIR}"
 
+is_enabled() {
+  case "${1:-}" in
+    1|true|TRUE|yes|YES|on|ON) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 CURRENT_RUNTIME_SIGNATURE="${BOT_RUNTIME_SIGNATURE:-}"
 if [ -n "${CURRENT_RUNTIME_SIGNATURE}" ]; then
   PREVIOUS_RUNTIME_SIGNATURE=""
@@ -17,12 +24,16 @@ if [ -n "${CURRENT_RUNTIME_SIGNATURE}" ]; then
   fi
 
   if [ -n "${PREVIOUS_RUNTIME_SIGNATURE}" ] && [ "${PREVIOUS_RUNTIME_SIGNATURE}" != "${CURRENT_RUNTIME_SIGNATURE}" ]; then
-    echo "Runtime signature changed, resetting persisted browser profile"
+    echo "Runtime signature changed"
     echo "  previous: ${PREVIOUS_RUNTIME_SIGNATURE}"
     echo "  current:  ${CURRENT_RUNTIME_SIGNATURE}"
-
-    # Keep the artifacts mount in place; it may be a Docker bind mount and cannot be moved.
-    find "${USER_DATA_DIR}" -mindepth 1 -maxdepth 1 ! -name artifacts -exec rm -rf {} +
+    if is_enabled "${BRS_RESET_PROFILE_ON_SIGNATURE_CHANGE:-0}"; then
+      echo "Resetting persisted browser profile because BRS_RESET_PROFILE_ON_SIGNATURE_CHANGE=1"
+      # Keep the artifacts mount in place; it may be a Docker bind mount and cannot be moved.
+      find "${USER_DATA_DIR}" -mindepth 1 -maxdepth 1 ! -name artifacts -exec rm -rf {} +
+    else
+      echo "Preserving persisted browser profile; set BRS_RESET_PROFILE_ON_SIGNATURE_CHANGE=1 to reset explicitly"
+    fi
   fi
 
   printf '%s' "${CURRENT_RUNTIME_SIGNATURE}" > "${RUNTIME_SIGNATURE_FILE}"
@@ -35,13 +46,6 @@ rm -f "${USER_DATA_DIR}"/SingletonLock \
       "${USER_DATA_DIR}"/DevToolsActivePort
 
 CHROME_PROXY_ARGS=()
-is_enabled() {
-  case "${1:-}" in
-    1|true|TRUE|yes|YES|on|ON) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
 EFFECTIVE_PROXY_SERVER="${BROWSER_PROXY_SERVER:-}"
 if [ -z "${EFFECTIVE_PROXY_SERVER}" ] && is_enabled "${BRS_TLS_GATEWAY_ENABLED:-1}" && [ -n "${BRS_TLS_GATEWAY_PROXY_SERVER:-}" ]; then
   EFFECTIVE_PROXY_SERVER="${BRS_TLS_GATEWAY_PROXY_SERVER}"
@@ -73,7 +77,8 @@ fi
 
 EXTENSION_ARGS=()
 if [ -n "${BROWSER_EXTENSION_DIR:-}" ] && [ -f "${BROWSER_EXTENSION_DIR}/manifest.json" ]; then
-  GENERATED_EXTENSION_DIR="/tmp/browser-runtime-extension"
+  EXTENSION_INSTANCE_ID="$(printf '%s' "${BOT_RUNTIME_SIGNATURE:-default}" | tr -c 'A-Za-z0-9_.-' '_' | cut -c1-64)"
+  GENERATED_EXTENSION_DIR="/tmp/browser-runtime-extension-${EXTENSION_INSTANCE_ID}"
   rm -rf "${GENERATED_EXTENSION_DIR}"
   mkdir -p "${GENERATED_EXTENSION_DIR}"
   cp -a "${BROWSER_EXTENSION_DIR}/." "${GENERATED_EXTENSION_DIR}/"
@@ -118,6 +123,12 @@ def json_list(name, fallback):
         except json.JSONDecodeError as error:
             print(f"Ignoring invalid {name}: {error}", file=sys.stderr)
     return fallback
+
+def csv_list(name, fallback):
+    raw = env(name, "")
+    if not raw:
+        return fallback
+    return [part.strip() for part in raw.split(",") if part.strip()]
 
 def seed_int():
     raw = env("BRS_FINGERPRINT_SEED", env("FINGERPRINT_SEED", "1000"))
@@ -323,6 +334,7 @@ config = {
     "stealth": {
         "enabled": flag("BRS_STEALTH_ENABLED", True),
         "profile": env("BRS_STEALTH_PROFILE", "standard"),
+        "excludedHosts": csv_list("BRS_STEALTH_EXCLUDED_HOSTS", ["accounts.google.com"]),
         "headersEnabled": flag("BRS_FINGERPRINT_HEADERS_ENABLED", True),
         "patchesEnabled": flag("BRS_FINGERPRINT_PATCHES_ENABLED", True),
         "canvasNoise": flag("BRS_CANVAS_NOISE_ENABLED", True),

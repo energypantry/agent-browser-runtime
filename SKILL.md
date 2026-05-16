@@ -62,6 +62,8 @@ MVP implements `shared-context-tab-group`; use `dedicated-runtime` conceptually 
 - Runtime profile, artifacts, and SQLite state are gitignored.
 - Do not commit cookies, credentials, screenshots with secrets, or `.env`.
 - If login/Captcha appears, use noVNC for manual handoff instead of trying to bypass it.
+- Runtime upgrades preserve the persisted browser profile by default. Use `BRS_RESET_PROFILE_ON_SIGNATURE_CHANGE=1` only for an intentional profile wipe.
+- `accounts.google.com` is excluded from default stealth/fingerprint patches because Google account and Chrome Sync flows are more sensitive to spoofed browser identity than normal collection targets.
 
 ## More detail
 

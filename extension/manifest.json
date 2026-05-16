@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Browser Runtime Skill Companion",
-  "version": "0.5.5",
+  "version": "0.5.7",
   "description": "Companion extension for browser-runtime-skill: real Tab Groups, CDP bridge, coherent fingerprint policy, and session probes.",
   "permissions": [
     "tabs",
