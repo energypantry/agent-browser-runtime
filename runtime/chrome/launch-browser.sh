@@ -35,9 +35,22 @@ rm -f "${USER_DATA_DIR}"/SingletonLock \
       "${USER_DATA_DIR}"/DevToolsActivePort
 
 CHROME_PROXY_ARGS=()
-if [ -n "${BROWSER_PROXY_SERVER:-}" ]; then
-  echo "Using browser proxy: ${BROWSER_PROXY_SERVER}"
-  CHROME_PROXY_ARGS+=("--proxy-server=${BROWSER_PROXY_SERVER}")
+is_enabled() {
+  case "${1:-}" in
+    1|true|TRUE|yes|YES|on|ON) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+EFFECTIVE_PROXY_SERVER="${BROWSER_PROXY_SERVER:-}"
+if [ -z "${EFFECTIVE_PROXY_SERVER}" ] && is_enabled "${BRS_TLS_GATEWAY_ENABLED:-1}" && [ -n "${BRS_TLS_GATEWAY_PROXY_SERVER:-}" ]; then
+  EFFECTIVE_PROXY_SERVER="${BRS_TLS_GATEWAY_PROXY_SERVER}"
+  echo "Using TLS gateway proxy: ${BRS_TLS_GATEWAY_PROXY_SERVER}"
+elif [ -n "${EFFECTIVE_PROXY_SERVER}" ]; then
+  echo "Using browser proxy: ${EFFECTIVE_PROXY_SERVER}"
+fi
+if [ -n "${EFFECTIVE_PROXY_SERVER}" ]; then
+  CHROME_PROXY_ARGS+=("--proxy-server=${EFFECTIVE_PROXY_SERVER}")
 fi
 if [ -n "${BROWSER_PROXY_BYPASS_LIST:-}" ]; then
   echo "Using proxy bypass list: ${BROWSER_PROXY_BYPASS_LIST}"
@@ -50,16 +63,82 @@ if [ -n "${BROWSER_EXTENSION_DIR:-}" ] && [ -f "${BROWSER_EXTENSION_DIR}/manifes
   rm -rf "${GENERATED_EXTENSION_DIR}"
   mkdir -p "${GENERATED_EXTENSION_DIR}"
   cp -a "${BROWSER_EXTENSION_DIR}/." "${GENERATED_EXTENSION_DIR}/"
-  if [ -n "${BROWSER_RUNTIME_BROKER_WS:-}" ]; then
-    python3 - "${BROWSER_RUNTIME_BROKER_WS}" "${GENERATED_EXTENSION_DIR}/runtime-config.js" <<'PY'
+  python3 - "${GENERATED_EXTENSION_DIR}/runtime-config.js" <<'PY'
 import json
+import os
 import pathlib
 import sys
 
-broker_ws, output = sys.argv[1], pathlib.Path(sys.argv[2])
-output.write_text(f"globalThis.BRS_CONFIG = {{ brokerWs: {json.dumps(broker_ws)} }};\n", encoding="utf-8")
+output = pathlib.Path(sys.argv[1])
+
+def env(name, default=""):
+    value = os.environ.get(name)
+    return default if value is None or value == "" else value
+
+def flag(name, default=True):
+    value = os.environ.get(name)
+    if value is None or value == "":
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+def json_object(name):
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return {}
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as error:
+        print(f"Ignoring invalid {name}: {error}", file=sys.stderr)
+        return {}
+    return value if isinstance(value, dict) else {}
+
+def json_list(name, fallback):
+    raw = os.environ.get(name, "").strip()
+    if raw:
+        try:
+            value = json.loads(raw)
+            if isinstance(value, list):
+                return [str(item) for item in value if str(item)]
+        except json.JSONDecodeError as error:
+            print(f"Ignoring invalid {name}: {error}", file=sys.stderr)
+    return fallback
+
+accept_language = env("BRS_ACCEPT_LANGUAGE", "en-US,en;q=0.9")
+derived_languages = [
+    part.split(";")[0].strip()
+    for part in accept_language.split(",")
+    if part.split(";")[0].strip()
+]
+tls_proxy_server = env("BRS_TLS_GATEWAY_PROXY_SERVER", "")
+tls_enabled = flag("BRS_TLS_GATEWAY_ENABLED", True)
+browser_proxy_server = env("BROWSER_PROXY_SERVER", "")
+config = {
+    "brokerWs": env("BROWSER_RUNTIME_BROKER_WS", "ws://broker:17890/extension"),
+    "stealth": {
+        "enabled": flag("BRS_STEALTH_ENABLED", True),
+        "profile": env("BRS_STEALTH_PROFILE", "standard"),
+        "headersEnabled": flag("BRS_FINGERPRINT_HEADERS_ENABLED", True),
+        "patchesEnabled": flag("BRS_FINGERPRINT_PATCHES_ENABLED", True),
+        "canvasNoise": flag("BRS_CANVAS_NOISE_ENABLED", True),
+        "audioNoise": flag("BRS_AUDIO_NOISE_ENABLED", True),
+        "acceptLanguage": accept_language,
+        "languages": json_list("BRS_LANGUAGES_JSON", derived_languages or ["en-US", "en"]),
+        "locale": env("BRS_LOCALE", "en-US"),
+        "timezone": env("BRS_STEALTH_TIMEZONE", env("BROWSER_TIMEZONE", "Asia/Shanghai")),
+        "platform": env("BRS_PLATFORM", ""),
+        "userAgent": env("BRS_USER_AGENT", ""),
+        "webglVendor": env("BRS_WEBGL_VENDOR", ""),
+        "webglRenderer": env("BRS_WEBGL_RENDERER", ""),
+        "extraHeaders": json_object("BRS_EXTRA_HTTP_HEADERS_JSON"),
+        "tlsGateway": {
+            "enabled": tls_enabled,
+            "proxyServer": tls_proxy_server,
+            "active": bool(tls_enabled and tls_proxy_server and not browser_proxy_server),
+        },
+    },
+}
+output.write_text(f"globalThis.BRS_CONFIG = {json.dumps(config, indent=2, sort_keys=True)};\n", encoding="utf-8")
 PY
-  fi
   EXTENSION_ARGS+=("--disable-extensions-except=${GENERATED_EXTENSION_DIR}" "--load-extension=${GENERATED_EXTENSION_DIR}")
 fi
 

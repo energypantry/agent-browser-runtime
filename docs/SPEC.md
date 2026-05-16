@@ -53,6 +53,22 @@ Host bindings are loopback-only:
 - Keep persistent browser profile at `./runtime/profile`.
 - Expose noVNC for manual login/Captcha handoff.
 - Load companion extension from `./extension`.
+- Generate `runtime-config.js` from `BRS_*` env vars before Chrome starts.
+
+## Browser consistency policy
+
+The runtime has a default-on browser consistency layer. It is intended to make real-browser agent sessions internally coherent across launch args, HTTP headers, JS-visible browser surfaces, and pacing. It does not guarantee platform acceptance and does not replace manual handoff for login, Captcha, sliders, or account-safety checks.
+
+Default capabilities:
+
+- `BRS_FINGERPRINT_HEADERS_ENABLED=1`: apply `Accept-Language` and optional `BRS_EXTRA_HTTP_HEADERS_JSON` through CDP before first navigation.
+- `BRS_FINGERPRINT_PATCHES_ENABLED=1`: inject `stealth-content.js` in the main world at `document_start`.
+- `BRS_CANVAS_NOISE_ENABLED=1` / `BRS_AUDIO_NOISE_ENABLED=1`: patch common canvas/audio fingerprint surfaces.
+- `BRS_LOCALE`, `BRS_STEALTH_TIMEZONE`, `BRS_USER_AGENT`, `BRS_PLATFORM`, `BRS_WEBGL_VENDOR`, and `BRS_WEBGL_RENDERER`: optional explicit profile overrides.
+- `BOT_HUMANIZE_LEVEL` and per-job `--humanize`: task-level pacing, mousemove, scroll, and pauses.
+- `BRS_TLS_GATEWAY_ENABLED=1`: TLS gateway capability is enabled by default, but it is only active when `BRS_TLS_GATEWAY_PROXY_SERVER` points at a real proxy/gateway.
+
+The default profile is `BRS_STEALTH_PROFILE=standard`. Set `BRS_STEALTH_ENABLED=0` for debugging or site compatibility isolation.
 
 ## Lease model
 
@@ -79,7 +95,7 @@ Returns broker and extension health.
 
 ### `GET /status`
 
-Returns runtime endpoints, active leases, tabs, extension connection state, and default humanization level.
+Returns runtime endpoints, active leases, tabs, extension connection state, default humanization level, and browser consistency policy status.
 
 ### `POST /leases`
 
@@ -200,6 +216,7 @@ Expected:
 - broker healthy
 - extension connected
 - `status.humanize.level` is present
+- `status.stealth.enabled` is true by default
 - a real Chrome Tab Group appears in noVNC
 - HTML artifact exists
 - screenshot artifact exists

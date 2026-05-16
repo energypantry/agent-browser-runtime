@@ -38,6 +38,7 @@ app.get('/status', async () => ({
   novncUrl,
   extensionConnected: extension.connected,
   humanize: { level: defaultHumanizeLevel },
+  stealth: stealthStatus(),
   leases: store.listLeases({ activeOnly: true }).map((lease) => ({ ...lease, tabs: store.listTabs(lease.id) })),
 }));
 
@@ -524,6 +525,45 @@ function compactTitle(value) {
 function readPositiveNumber(value, fallback) {
   const num = Number(value);
   return Number.isFinite(num) && num > 0 ? num : fallback;
+}
+
+function stealthStatus() {
+  const tlsProxyServer = String(process.env.BRS_TLS_GATEWAY_PROXY_SERVER || '').trim();
+  const browserProxyServer = String(process.env.BROWSER_PROXY_SERVER || '').trim();
+  const extraHeaders = parseJsonObject(process.env.BRS_EXTRA_HTTP_HEADERS_JSON);
+  return {
+    enabled: readEnvFlag('BRS_STEALTH_ENABLED', true),
+    profile: String(process.env.BRS_STEALTH_PROFILE || 'standard'),
+    headersEnabled: readEnvFlag('BRS_FINGERPRINT_HEADERS_ENABLED', true),
+    patchesEnabled: readEnvFlag('BRS_FINGERPRINT_PATCHES_ENABLED', true),
+    canvasNoise: readEnvFlag('BRS_CANVAS_NOISE_ENABLED', true),
+    audioNoise: readEnvFlag('BRS_AUDIO_NOISE_ENABLED', true),
+    acceptLanguage: String(process.env.BRS_ACCEPT_LANGUAGE || 'en-US,en;q=0.9'),
+    locale: String(process.env.BRS_LOCALE || 'en-US'),
+    timezone: String(process.env.BRS_STEALTH_TIMEZONE || process.env.BROWSER_TIMEZONE || 'Asia/Shanghai'),
+    extraHeaderKeys: Object.keys(extraHeaders),
+    tlsGateway: {
+      enabled: readEnvFlag('BRS_TLS_GATEWAY_ENABLED', true),
+      configured: Boolean(tlsProxyServer),
+      active: Boolean(readEnvFlag('BRS_TLS_GATEWAY_ENABLED', true) && tlsProxyServer && !browserProxyServer),
+    },
+  };
+}
+
+function readEnvFlag(name, fallback = true) {
+  const value = process.env[name];
+  if (value == null || value === '') return fallback;
+  return ['1', 'true', 'yes', 'on'].includes(String(value).trim().toLowerCase());
+}
+
+function parseJsonObject(value) {
+  if (!value) return {};
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
 }
 
 function colorFor(seed) {

@@ -10,7 +10,7 @@ Returns broker liveness, CDP endpoint, and `extensionConnected`.
 
 ### `GET /status`
 
-Returns runtime endpoints, extension connectivity, active leases, and owned tabs.
+Returns runtime endpoints, extension connectivity, active leases, owned tabs, humanization defaults, and browser consistency policy status. `stealth.tlsGateway.active` is true only when a TLS gateway proxy is configured.
 
 ## Leases
 

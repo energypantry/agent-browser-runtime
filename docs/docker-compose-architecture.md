@@ -33,6 +33,8 @@ Responsibilities:
 - persistent real Chromium profile under `runtime/profile`
 - noVNC manual handoff for login/Captcha
 - loads `extension/` at browser launch
+- generates `runtime-config.js` from `BRS_*` env vars for the companion extension
+- applies an optional proxy/TLS gateway when `BRS_TLS_GATEWAY_PROXY_SERVER` is set
 - exposes an internal CDP proxy for diagnostics; the MVP control path uses the extension debugger API for page ops
 
 ### companion extension
@@ -41,6 +43,7 @@ Responsibilities:
 
 - create tabs and real Chrome Tab Groups
 - attach `chrome.debugger` to background tabs
+- apply default browser consistency policy: fingerprint headers, locale/timezone overrides, and main-world browser-surface patches
 - capture HTML and screenshots
 - close/release tabs when broker requests
 

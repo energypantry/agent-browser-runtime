@@ -91,6 +91,8 @@ node --check broker/src/server.js >/dev/null
 node --check broker/src/extension-rpc.js >/dev/null
 node --check broker/src/store.js >/dev/null
 node --check extension/background.js >/dev/null
+node --check extension/runtime-config.js >/dev/null
+node --check extension/stealth-content.js >/dev/null
 node --check cli/brs.js >/dev/null
 node --check extractors/example.extract.js >/dev/null
 node --check extractors/failing.extract.js >/dev/null
@@ -122,8 +124,11 @@ with open(sys.argv[1]) as f:
     status = json.load(f)
 if status.get('extensionConnected') is not True:
     raise SystemExit(f"extension not connected: {status}")
+if status.get('stealth', {}).get('enabled') is not True:
+    raise SystemExit(f"stealth policy not enabled: {status.get('stealth')}")
 print('extensionConnected=true')
 print('humanize=', status.get('humanize'))
+print('stealth=', status.get('stealth'))
 print('activeLeases=', len(status.get('leases') or []))
 PY
 

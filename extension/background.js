@@ -88,7 +88,9 @@ async function dispatch(method, params) {
 }
 
 async function tabsCreate(params) {
-  const tab = await chrome.tabs.create({ active: Boolean(params.active), url: params.url || 'about:blank' });
+  const targetUrl = params.url || 'about:blank';
+  const shouldPrepareTab = shouldApplyStealthOverrides(targetUrl);
+  const tab = await chrome.tabs.create({ active: Boolean(params.active), url: shouldPrepareTab ? 'about:blank' : targetUrl });
   if (!tab.id) throw new Error('Chrome did not return a tab id');
   const chromeGroupId = await groupTab(tab.id, params.groupId);
   await chrome.tabGroups.update(chromeGroupId, {
@@ -96,6 +98,10 @@ async function tabsCreate(params) {
     color: normalizeColor(params.groupColor),
     collapsed: false,
   });
+  if (shouldPrepareTab) {
+    await applyStealthCdpOverrides(tab.id).catch((error) => console.warn('[BRS] stealth CDP overrides failed', error));
+    await chrome.tabs.update(tab.id, { url: targetUrl, active: Boolean(params.active) });
+  }
   if (params.waitUntilCompleteMs !== 0) await waitForTabComplete(tab.id, params.waitUntilCompleteMs || 15000).catch(() => {});
   return { chromeGroupId, tab: normalizeTab(await chrome.tabs.get(tab.id)) };
 }
@@ -128,6 +134,9 @@ async function tabsClose(params) {
 async function tabsNavigate(params) {
   const tabId = Number(params.tabId);
   if (!params.url) throw new Error('url is required');
+  if (shouldApplyStealthOverrides(params.url)) {
+    await applyStealthCdpOverrides(tabId).catch((error) => console.warn('[BRS] stealth CDP overrides failed', error));
+  }
   await chrome.tabs.update(tabId, { url: params.url, active: Boolean(params.active) });
   if (params.waitUntilCompleteMs !== 0) await waitForTabComplete(tabId, params.waitUntilCompleteMs || 15000).catch(() => {});
   return { tab: normalizeTab(await chrome.tabs.get(tabId)) };
@@ -154,6 +163,56 @@ async function cdpExecute(params) {
   const tabId = Number(params.tabId);
   await attachDebugger(tabId);
   return chrome.debugger.sendCommand({ tabId }, params.method, params.params || {});
+}
+
+function stealthPolicy() {
+  return globalThis.BRS_CONFIG?.stealth || {};
+}
+
+function shouldApplyStealthOverrides(url) {
+  const policy = stealthPolicy();
+  if (!policy.enabled) return false;
+  if (!url || url === 'about:blank' || url.startsWith('chrome://') || url.startsWith('chrome-extension://')) return false;
+  const extraHeaders = policy.extraHeaders && typeof policy.extraHeaders === 'object' ? policy.extraHeaders : {};
+  return Boolean(
+    (policy.headersEnabled && policy.acceptLanguage) ||
+    Object.keys(extraHeaders).length > 0 ||
+    policy.userAgent ||
+    policy.locale ||
+    policy.timezone ||
+    policy.platform
+  );
+}
+
+async function applyStealthCdpOverrides(tabId) {
+  const policy = stealthPolicy();
+  if (!policy.enabled) return null;
+  await attachDebugger(tabId);
+  await chrome.debugger.sendCommand({ tabId }, 'Network.enable', {}).catch(() => {});
+
+  const headers = { ...(policy.extraHeaders || {}) };
+  if (policy.headersEnabled && policy.acceptLanguage && !headers['Accept-Language']) {
+    headers['Accept-Language'] = String(policy.acceptLanguage);
+  }
+  if (Object.keys(headers).length > 0) {
+    await chrome.debugger.sendCommand({ tabId }, 'Network.setExtraHTTPHeaders', { headers }).catch(() => {});
+  }
+
+  if (policy.userAgent || policy.acceptLanguage || policy.platform) {
+    const override = {};
+    if (policy.userAgent) override.userAgent = String(policy.userAgent);
+    if (policy.acceptLanguage) override.acceptLanguage = String(policy.acceptLanguage);
+    if (policy.platform) override.platform = String(policy.platform);
+    if (override.userAgent) await chrome.debugger.sendCommand({ tabId }, 'Network.setUserAgentOverride', override).catch(() => {});
+  }
+
+  if (policy.timezone) {
+    await chrome.debugger.sendCommand({ tabId }, 'Emulation.setTimezoneOverride', { timezoneId: String(policy.timezone) }).catch(() => {});
+  }
+  if (policy.locale) {
+    await chrome.debugger.sendCommand({ tabId }, 'Emulation.setLocaleOverride', { locale: String(policy.locale) }).catch(() => {});
+  }
+  return { ok: true };
 }
 
 async function pageHtml(params) {

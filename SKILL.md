@@ -1,6 +1,6 @@
 ---
 name: browser-runtime-skill
-description: Use a compose-managed real Chrome runtime with persistent profile, noVNC handoff, real Tab Groups, leases, extractor jobs, fingerprint-compatible launch, and runtime humanization for browser scraping or page exploration.
+description: Use a compose-managed real Chrome runtime with persistent profile, noVNC handoff, real Tab Groups, leases, extractor jobs, default browser consistency policy, and runtime humanization for browser scraping or page exploration.
 ---
 
 # browser-runtime-skill
@@ -30,6 +30,8 @@ Endpoints:
 - Agents must use broker leases; do not directly fight over Chrome tabs.
 - One lease maps to one real Chrome Tab Group.
 - Broker persists state/artifacts and owns task-level pacing; the extension only executes Chrome-native browser operations, including scripting-based humanized mouse/scroll/pause actions.
+- Browser consistency policy is default-on: fingerprint headers, main-world canvas/audio/browser-surface patches, locale/timezone CDP overrides, and optional TLS gateway proxy support are configured through `BRS_*` env vars.
+- `./cli/brs.js status` should show `stealth.enabled: true`; `stealth.tlsGateway.active` is true only when `BRS_TLS_GATEWAY_PROXY_SERVER` is configured.
 - Extractor retries should preserve the extractor's real error. A `No group with id` failure usually means the runtime needs the current bugfix version loaded.
 
 ## Quick commands
@@ -51,7 +53,7 @@ From the project root:
 2. `record`: save selectors, screenshots, HTML, network hints, and failure states.
 3. `run`: execute a stable extractor script in a leased workspace.
 
-MVP implements `shared-context-tab-group`; use `dedicated-runtime` conceptually for risky targets that should not share profile/IP/session. Humanization profiles are `minimal`, `standard`, `enhanced`, or `off`; pass `--humanize <level>` per job or set `BOT_HUMANIZE_LEVEL`.
+MVP implements `shared-context-tab-group`; use `dedicated-runtime` conceptually for risky targets that should not share profile/IP/session. Humanization profiles are `minimal`, `standard`, `enhanced`, or `off`; pass `--humanize <level>` per job or set `BOT_HUMANIZE_LEVEL`. Browser consistency profile defaults to `BRS_STEALTH_PROFILE=standard`.
 
 ## Safety
 
