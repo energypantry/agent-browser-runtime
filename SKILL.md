@@ -32,6 +32,7 @@ Endpoints:
 - Broker persists state/artifacts and owns task-level pacing; the extension only executes Chrome-native browser operations, including scripting-based humanized mouse/scroll/pause actions.
 - Browser consistency policy is default-on: a seed-based coherent fingerprint profile, UA/UA-CH headers, main-world stealth evasions, locale/timezone CDP overrides, and optional TLS gateway proxy support are configured through `BRS_*` env vars.
 - `./cli/brs.js status` should show `stealth.enabled: true`, `stealth.fingerprint.generated: true`, `platformPacing`, and active TLS gateway health/stats fields when configured.
+- Request pacing is mandatory. Never issue two broker-driven browser requests, including `fetch`, `extract`, `open`, `probe-session`, navigation, or retry actions, less than 70 ms apart; treat 70 ms as a hard floor, not a safe scraping cadence. For unknown or sensitive platforms, serialize work per target site and use seconds-to-minutes cooldowns.
 - Use `./cli/brs.js probe-session <platform>` to check persisted login/session state for `linkedin`, `reddit`, `facebook`, `instagram`, or `generic`; cookie values are omitted unless `--include-cookies` is passed, and full storage export requires `--include-storage-state`.
 - Extractor retries should preserve the extractor's real error. A `No group with id` failure usually means the runtime needs the current bugfix version loaded.
 
