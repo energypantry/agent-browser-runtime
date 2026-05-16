@@ -88,6 +88,28 @@ async function main() {
       humanize: options.humanize || options.humanizeLevel,
     }));
   }
+  if (cmd === 'probe-session' || cmd === 'probe') {
+    const platform = args[0];
+    if (!platform) throw new Error(`${cmd} requires <platform>`);
+    const options = parseOptions(args.slice(1));
+    return print(await api('POST', '/sessions/probe', {
+      platform,
+      url: options.url,
+      agentId: options.agent || options.agentId || 'cli',
+      taskId: options.task || options.taskId || `probe:${platform}`,
+      includeCookies: Boolean(options.includeCookies),
+      includeStorageState: Boolean(options.includeStorageState),
+      cooldown: options.cooldown,
+      cooldownMode: options.cooldownMode,
+      saveHtml: Boolean(options.saveHtml),
+      screenshot: Boolean(options.screenshot),
+      fullPage: Boolean(options.fullPage),
+      keepOpen: Boolean(options.keepOpen),
+      active: Boolean(options.active),
+      waitUntilCompleteMs: options.waitMs || options.waitUntilCompleteMs,
+      humanize: options.humanize || options.humanizeLevel,
+    }));
+  }
   throw new Error(`Unknown command: ${cmd}`);
 }
 
@@ -146,8 +168,7 @@ function coerce(value) {
 
 function print(obj) { console.log(JSON.stringify(obj, null, 2)); }
 function help() {
-  console.log(`browser-runtime-skill CLI\n\nUsage:\n  brs status\n  brs health\n  brs leases\n  brs jobs [--status success]\n  brs job <jobId>\n  brs artifacts [--leaseId <leaseId>] [--kind screenshot]\n  brs artifact <artifactId>\n  brs artifact-download <artifactId> <outputPath>\n  brs artifact-delete <artifactId>\n  brs cleanup-artifacts [--olderThanDays 7] [--dryRun false]\n  brs acquire --agentId vovo --taskId smoke --domain example.com\n  brs open <leaseId> <url>\n  brs fetch <url> [--agent vovo] [--task smoke] [--screenshot] [--full-page] [--keep-open] [--humanize enhanced]
-  brs extract <extractor.extract.js> <url> [--agent vovo] [--task smoke] [--screenshot] [--save-html] [--humanize enhanced] [--params '{"limit":3}'] [--max-attempts 2]\n  brs release <leaseId> [--keep-tabs]\n\nEnv:\n  BRS_BROKER_URL=${DEFAULT_BROKER}`);
+  console.log(`browser-runtime-skill CLI\n\nUsage:\n  brs status\n  brs health\n  brs leases\n  brs jobs [--status success]\n  brs job <jobId>\n  brs artifacts [--leaseId <leaseId>] [--kind screenshot]\n  brs artifact <artifactId>\n  brs artifact-download <artifactId> <outputPath>\n  brs artifact-delete <artifactId>\n  brs cleanup-artifacts [--olderThanDays 7] [--dryRun false]\n  brs acquire --agentId vovo --taskId smoke --domain example.com\n  brs open <leaseId> <url>\n  brs fetch <url> [--agent vovo] [--task smoke] [--screenshot] [--full-page] [--keep-open] [--humanize enhanced]\n  brs probe-session <platform> [--url <url>] [--include-cookies] [--include-storage-state] [--cooldown false] [--screenshot] [--save-html] [--keep-open] [--humanize off]\n  brs extract <extractor.extract.js> <url> [--agent vovo] [--task smoke] [--screenshot] [--save-html] [--humanize enhanced] [--params '{"limit":3}'] [--max-attempts 2]\n  brs release <leaseId> [--keep-tabs]\n\nEnv:\n  BRS_BROKER_URL=${DEFAULT_BROKER}`);
 }
 
 main().catch((error) => {

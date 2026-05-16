@@ -61,12 +61,16 @@ The runtime has a default-on browser consistency layer. It is intended to make r
 
 Default capabilities:
 
-- `BRS_FINGERPRINT_HEADERS_ENABLED=1`: apply `Accept-Language` and optional `BRS_EXTRA_HTTP_HEADERS_JSON` through CDP before first navigation.
-- `BRS_FINGERPRINT_PATCHES_ENABLED=1`: inject `stealth-content.js` in the main world at `document_start`.
+- `BRS_GENERATE_FINGERPRINT_ENABLED=1`: derive a coherent browser identity from `BRS_FINGERPRINT_SEED` or `FINGERPRINT_SEED`.
+- Generated identity includes user agent, UA-CH metadata and headers, `Accept-Language`, navigator platform, WebGL vendor/renderer, hardware concurrency, device memory, and touch points.
+- Chromium major/full version is detected from the runtime binary by default. `BRS_CHROME_MAJOR` and `BRS_CHROME_FULL_VERSION` intentionally override the detected version when set.
+- `BRS_FINGERPRINT_HEADERS_ENABLED=1`: apply generated headers plus optional `BRS_EXTRA_HTTP_HEADERS_JSON` through CDP before first navigation.
+- `BRS_FINGERPRINT_PATCHES_ENABLED=1`: inject `stealth-content.js` in the main world at `document_start`; default evasions cover webdriver, languages, platform, vendor, plugins/mimeTypes, Chrome app/runtime stubs, media codecs, WebGL, canvas, and audio.
 - `BRS_CANVAS_NOISE_ENABLED=1` / `BRS_AUDIO_NOISE_ENABLED=1`: patch common canvas/audio fingerprint surfaces.
 - `BRS_LOCALE`, `BRS_STEALTH_TIMEZONE`, `BRS_USER_AGENT`, `BRS_PLATFORM`, `BRS_WEBGL_VENDOR`, and `BRS_WEBGL_RENDERER`: optional explicit profile overrides.
 - `BOT_HUMANIZE_LEVEL` and per-job `--humanize`: task-level pacing, mousemove, scroll, and pauses.
-- `BRS_TLS_GATEWAY_ENABLED=1`: TLS gateway capability is enabled by default, but it is only active when `BRS_TLS_GATEWAY_PROXY_SERVER` points at a real proxy/gateway.
+- `BRS_PLATFORM_COOLDOWN_ENABLED=1`: platform-level cooldown defaults mirror LeadsDaddy's runtime pacing layer (`reddit=45s`, `facebook=60s`, `linkedin=180s`, `instagram=240s`, manual challenge `300s`).
+- `BRS_TLS_GATEWAY_ENABLED=1`: TLS gateway capability is enabled by default, but it is only active when `BRS_TLS_GATEWAY_PROXY_SERVER` points at a real proxy/gateway. When active, Chromium receives `--proxy-server` and `--disable-quic`. Status can read gateway health/stats with `BRS_TLS_GATEWAY_BASE_URL`, `BRS_TLS_GATEWAY_HEALTH_URL`, or `BRS_TLS_GATEWAY_STATS_URL`.
 
 The default profile is `BRS_STEALTH_PROFILE=standard`. Set `BRS_STEALTH_ENABLED=0` for debugging or site compatibility isolation.
 
@@ -95,7 +99,8 @@ Returns broker and extension health.
 
 ### `GET /status`
 
-Returns runtime endpoints, active leases, tabs, extension connection state, default humanization level, and browser consistency policy status.
+Returns runtime endpoints, active leases, tabs, extension connection state, default humanization level, browser consistency policy status, sanitized runtime config loaded by the extension, and optional TLS gateway health/stats.
+Also returns `platformPacing` with cooldown defaults and last action timestamps.
 
 ### `POST /leases`
 
@@ -148,6 +153,35 @@ One-shot MVP workflow:
 3. navigate/wait
 4. capture HTML and optional screenshot
 5. optionally release/close
+
+### `POST /sessions/probe`
+
+One-shot platform session probe:
+
+1. acquire lease
+2. open the platform URL in a grouped tab
+3. optionally humanize
+4. inspect cookies through CDP and lightweight page/login/challenge signals
+5. write a `session-probe` artifact
+6. optionally save HTML/screenshot and optionally keep the tab open
+
+Supported platform policies: `linkedin`, `reddit`, `facebook`, `instagram`, and `generic`.
+
+```json
+{
+  "platform": "linkedin",
+  "url": "https://www.linkedin.com/feed/",
+  "includeCookies": false,
+  "includeStorageState": false,
+  "cooldown": true,
+  "saveHtml": false,
+  "screenshot": false,
+  "humanize": "off"
+}
+```
+
+Returns `connected`, `reason`, `errorCode`, auth cookie names, cookie expiry, current URL, and page signals. Cookie values are omitted unless `includeCookies=true`.
+Set `includeStorageState=true` to export cookies plus local/session storage values for the current origin. This is sensitive and should not be committed.
 
 ### `GET /jobs` / `GET /jobs/:id`
 

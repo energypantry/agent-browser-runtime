@@ -10,7 +10,7 @@ Returns broker liveness, CDP endpoint, and `extensionConnected`.
 
 ### `GET /status`
 
-Returns runtime endpoints, extension connectivity, active leases, owned tabs, humanization defaults, and browser consistency policy status. `stealth.tlsGateway.active` is true only when a TLS gateway proxy is configured.
+Returns runtime endpoints, extension connectivity, active leases, owned tabs, humanization defaults, platform pacing policy, browser consistency policy status, sanitized extension-loaded runtime config, and optional TLS gateway health/stats. `stealth.tlsGateway.active` is true only when a TLS gateway proxy is configured and not overridden by `BROWSER_PROXY_SERVER`.
 
 ## Leases
 
@@ -97,6 +97,26 @@ Return one job plus logs and lease artifacts.
 ### `POST /jobs/fetch-page`
 
 One-shot workflow: create lease, open grouped tab, capture HTML, optionally screenshot, then release/close unless `keepOpen=true`.
+
+### `POST /sessions/probe`
+
+One-shot session/auth-state probe for `linkedin`, `reddit`, `facebook`, `instagram`, or `generic`. The broker creates a lease, opens the platform URL, asks the extension to inspect CDP cookies and page signals, writes a `session-probe` artifact, and closes the tab unless `keepOpen=true`.
+
+```json
+{
+  "platform": "linkedin",
+  "url": "https://www.linkedin.com/feed/",
+  "includeCookies": false,
+  "includeStorageState": false,
+  "cooldown": true,
+  "saveHtml": false,
+  "screenshot": false,
+  "humanize": "off"
+}
+```
+
+Returns `probe.connected`, `probe.reason`, `probe.errorCode`, auth cookie names, cookie expiry, current URL, page login/challenge signals, and artifact metadata. Cookie values are returned only when `includeCookies=true`.
+Set `includeStorageState=true` to return a Playwright-style `storageState` object with cookies and current-origin storage values. Platform cooldowns default to wait mode; pass `cooldown=false` to bypass or `cooldownMode=reject` to get HTTP 429 instead of waiting.
 
 ### `POST /jobs/extract`
 

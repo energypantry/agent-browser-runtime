@@ -71,6 +71,7 @@ function stopKeepalive() {
 async function dispatch(method, params) {
   switch (method) {
     case 'ping': return { ok: true, at: new Date().toISOString() };
+    case 'runtime.config': return runtimeConfig();
     case 'tabs.create': return tabsCreate(params);
     case 'tabs.close': return tabsClose(params);
     case 'tabs.navigate': return tabsNavigate(params);
@@ -80,6 +81,7 @@ async function dispatch(method, params) {
     case 'cdp.execute': return cdpExecute(params);
     case 'page.html': return pageHtml(params);
     case 'screenshot.capture': return screenshotCapture(params);
+    case 'session.probe': return sessionProbe(params);
     case 'humanize.warmup': return humanizeWarmup(params);
     case 'humanize.scroll': return humanizeScroll(params);
     case 'humanize.pause': return humanizePause(params);
@@ -102,7 +104,7 @@ async function tabsCreate(params) {
     await applyStealthCdpOverrides(tab.id).catch((error) => console.warn('[BRS] stealth CDP overrides failed', error));
     await chrome.tabs.update(tab.id, { url: targetUrl, active: Boolean(params.active) });
   }
-  if (params.waitUntilCompleteMs !== 0) await waitForTabComplete(tab.id, params.waitUntilCompleteMs || 15000).catch(() => {});
+  if (params.waitUntilCompleteMs !== 0) await waitForTabComplete(tab.id, params.waitUntilCompleteMs || 15000, targetUrl).catch(() => {});
   return { chromeGroupId, tab: normalizeTab(await chrome.tabs.get(tab.id)) };
 }
 
@@ -138,7 +140,7 @@ async function tabsNavigate(params) {
     await applyStealthCdpOverrides(tabId).catch((error) => console.warn('[BRS] stealth CDP overrides failed', error));
   }
   await chrome.tabs.update(tabId, { url: params.url, active: Boolean(params.active) });
-  if (params.waitUntilCompleteMs !== 0) await waitForTabComplete(tabId, params.waitUntilCompleteMs || 15000).catch(() => {});
+  if (params.waitUntilCompleteMs !== 0) await waitForTabComplete(tabId, params.waitUntilCompleteMs || 15000, params.url).catch(() => {});
   return { tab: normalizeTab(await chrome.tabs.get(tabId)) };
 }
 
@@ -203,6 +205,7 @@ async function applyStealthCdpOverrides(tabId) {
     if (policy.userAgent) override.userAgent = String(policy.userAgent);
     if (policy.acceptLanguage) override.acceptLanguage = String(policy.acceptLanguage);
     if (policy.platform) override.platform = String(policy.platform);
+    if (policy.userAgentMetadata && typeof policy.userAgentMetadata === 'object') override.userAgentMetadata = policy.userAgentMetadata;
     if (override.userAgent) await chrome.debugger.sendCommand({ tabId }, 'Network.setUserAgentOverride', override).catch(() => {});
   }
 
@@ -213,6 +216,235 @@ async function applyStealthCdpOverrides(tabId) {
     await chrome.debugger.sendCommand({ tabId }, 'Emulation.setLocaleOverride', { locale: String(policy.locale) }).catch(() => {});
   }
   return { ok: true };
+}
+
+function runtimeConfig() {
+  const config = cloneJson(globalThis.BRS_CONFIG || {});
+  if (config?.stealth?.extraHeaders) {
+    config.stealth.extraHeaderKeys = Object.keys(config.stealth.extraHeaders);
+    delete config.stealth.extraHeaders;
+  }
+  if (config?.stealth?.tlsGateway && Object.prototype.hasOwnProperty.call(config.stealth.tlsGateway, 'proxyServer')) {
+    config.stealth.tlsGateway.configured = Boolean(config.stealth.tlsGateway.proxyServer);
+    delete config.stealth.tlsGateway.proxyServer;
+  }
+  return { config };
+}
+
+async function sessionProbe(params) {
+  const tabId = Number(params.tabId);
+  const platform = String(params.platform || 'generic').toLowerCase();
+  const policy = platformProbePolicy(platform);
+  if (params.url) {
+    await tabsNavigate({
+      tabId,
+      url: String(params.url),
+      waitUntilCompleteMs: params.waitUntilCompleteMs ?? 15000,
+    });
+  }
+  await attachDebugger(tabId);
+  await chrome.debugger.sendCommand({ tabId }, 'Network.enable', {}).catch(() => {});
+  const [tab, cookiesResult, page] = await Promise.all([
+    chrome.tabs.get(tabId).then(normalizeTab),
+    chrome.debugger.sendCommand({ tabId }, 'Network.getAllCookies', {}).catch(() => ({ cookies: [] })),
+    probePageState(tabId, policy),
+  ]);
+  const cookies = filterProbeCookies(cookiesResult?.cookies || [], policy, tab.url);
+  const cookieNames = [...new Set(cookies.map((cookie) => cookie.name))].sort();
+  const authCookieNames = cookieNames.filter((name) => policy.authCookies.includes(name));
+  const challenge = Boolean(page.challengeMatched || matchesAny(tab.url, policy.challengeUrlIncludes));
+  const loginRequired = Boolean(page.loginSelectorMatched || matchesAny(tab.url, policy.loginUrlIncludes));
+  const connected = authCookieNames.length > 0 && !challenge && !loginRequired;
+  const reason = connected
+    ? 'auth-cookie'
+    : challenge
+      ? 'challenge-detected'
+      : loginRequired
+        ? 'login-required'
+        : authCookieNames.length
+          ? 'auth-cookie-needs-verification'
+          : 'no-auth-cookie';
+  return {
+    platform,
+    connected,
+    reason,
+    errorCode: connected ? null : reason.toUpperCase().replace(/-/g, '_'),
+    currentUrl: tab.url,
+    title: tab.title,
+    cookieNames,
+    authCookieNames,
+    expiresAt: cookieExpiresAt(cookies),
+    page,
+    cookies: params.includeCookies ? cookies.map(normalizeCookie) : undefined,
+    storageState: params.includeStorageState ? await buildStorageState(tabId, cookies) : undefined,
+  };
+}
+
+function platformProbePolicy(platform) {
+  const policies = {
+    linkedin: {
+      domains: ['linkedin.com', '.linkedin.com'],
+      authCookies: ['li_at'],
+      loginUrlIncludes: ['/login', '/uas/login', '/checkpoint/lg/login'],
+      challengeUrlIncludes: ['/checkpoint/', '/challenge/', '/captcha'],
+      loginSelectors: [
+        'input[name="session_key"]',
+        'input[name="session_password"]',
+        'form[action*="login"]',
+        'a[href*="/login"]',
+      ],
+      challengeText: ['security verification', 'verify your identity', 'captcha', 'checkpoint'],
+    },
+    reddit: {
+      domains: ['reddit.com', '.reddit.com', 'www.reddit.com'],
+      authCookies: ['reddit_session', 'token_v2'],
+      loginUrlIncludes: ['/login', '/account/login'],
+      challengeUrlIncludes: ['/captcha'],
+      loginSelectors: ['input[name="username"]', 'input[name="password"]', 'shreddit-signup-drawer', 'auth-flow-modal'],
+      challengeText: ['prove you are human', 'captcha', 'verify'],
+    },
+    facebook: {
+      domains: ['facebook.com', '.facebook.com'],
+      authCookies: ['c_user', 'xs'],
+      loginUrlIncludes: ['/login', '/checkpoint/block'],
+      challengeUrlIncludes: ['/checkpoint', '/captcha'],
+      loginSelectors: ['input[name="email"]', 'input[name="pass"]', 'form[action*="login"]'],
+      challengeText: ['security check', 'confirm your identity', 'captcha', 'checkpoint'],
+    },
+    instagram: {
+      domains: ['instagram.com', '.instagram.com'],
+      authCookies: ['sessionid', 'ds_user_id'],
+      loginUrlIncludes: ['/accounts/login'],
+      challengeUrlIncludes: ['/challenge/', '/captcha'],
+      loginSelectors: ['input[name="username"]', 'input[name="password"]', 'form[action*="/accounts/login"]'],
+      challengeText: ['suspicious login attempt', 'challenge required', 'captcha', 'verify'],
+    },
+    generic: {
+      domains: [],
+      authCookies: [],
+      loginUrlIncludes: ['/login', '/signin', '/sign-in'],
+      challengeUrlIncludes: ['/captcha', '/challenge'],
+      loginSelectors: ['input[type="password"]'],
+      challengeText: ['captcha', 'verify you are human', 'security verification'],
+    },
+  };
+  return policies[platform] || policies.generic;
+}
+
+async function probePageState(tabId, policy) {
+  const expression = `(() => {
+    const loginSelectors = ${JSON.stringify(policy.loginSelectors || [])};
+    const challengeText = ${JSON.stringify(policy.challengeText || [])};
+    const text = ((document.body && document.body.innerText) || '').toLowerCase().slice(0, 120000);
+    const visible = (element) => {
+      if (!element) return false;
+      const style = window.getComputedStyle(element);
+      const rect = element.getBoundingClientRect();
+      return style.visibility !== 'hidden' && style.display !== 'none' && rect.width > 0 && rect.height > 0;
+    };
+    const matchedSelector = loginSelectors.find((selector) => {
+      try { return Array.from(document.querySelectorAll(selector)).some(visible); }
+      catch (_) { return false; }
+    }) || null;
+    const matchedText = challengeText.find((needle) => text.includes(String(needle).toLowerCase())) || null;
+    return {
+      url: location.href,
+      title: document.title || '',
+      readyState: document.readyState,
+      loginSelectorMatched: matchedSelector,
+      challengeMatched: matchedText,
+      forms: document.forms ? document.forms.length : 0,
+      passwordInputs: document.querySelectorAll('input[type="password"]').length,
+    };
+  })()`;
+  const result = await chrome.debugger.sendCommand({ tabId }, 'Runtime.evaluate', {
+    expression,
+    returnByValue: true,
+    awaitPromise: true,
+  }).catch((error) => ({ result: { value: { error: error?.message || String(error) } } }));
+  return result?.result?.value || {};
+}
+
+function filterProbeCookies(cookies, policy, currentUrl) {
+  let domains = policy.domains || [];
+  if (!domains.length && currentUrl) {
+    try {
+      const hostname = new URL(currentUrl).hostname;
+      domains = [hostname, `.${hostname}`];
+    } catch (_) {}
+  }
+  if (!domains.length) return [];
+  return cookies.filter((cookie) => domains.some((domain) => cookie.domain === domain || cookie.domain.endsWith(domain) || domain.endsWith(cookie.domain)));
+}
+
+function normalizeCookie(cookie) {
+  return {
+    name: cookie.name,
+    value: cookie.value,
+    domain: cookie.domain,
+    path: cookie.path,
+    expires: cookie.expires,
+    httpOnly: Boolean(cookie.httpOnly),
+    secure: Boolean(cookie.secure),
+    sameSite: cookie.sameSite || null,
+  };
+}
+
+async function buildStorageState(tabId, cookies) {
+  const originResult = await chrome.debugger.sendCommand({ tabId }, 'Runtime.evaluate', {
+    expression: `(() => {
+      const readStorage = (storage) => {
+        const rows = [];
+        try {
+          for (let index = 0; index < storage.length; index += 1) {
+            const name = storage.key(index);
+            rows.push({ name, value: storage.getItem(name) });
+          }
+        } catch (_) {}
+        return rows;
+      };
+      return {
+        origin: location.origin,
+        localStorage: readStorage(window.localStorage),
+        sessionStorage: readStorage(window.sessionStorage),
+      };
+    })()`,
+    returnByValue: true,
+    awaitPromise: true,
+  }).catch(() => ({ result: { value: null } }));
+  const origin = originResult?.result?.value;
+  const origins = origin?.origin && origin.origin !== 'null'
+    ? [{
+      origin: origin.origin,
+      localStorage: origin.localStorage || [],
+      sessionStorage: origin.sessionStorage || [],
+    }]
+    : [];
+  return {
+    cookies: cookies.map(normalizeCookie),
+    origins,
+  };
+}
+
+function cookieExpiresAt(cookies) {
+  const expiries = cookies
+    .map((cookie) => Number(cookie.expires || 0))
+    .filter((expires) => Number.isFinite(expires) && expires > 0);
+  if (!expiries.length) return null;
+  return new Date(Math.min(...expiries) * 1000).toISOString();
+}
+
+function matchesAny(value, needles) {
+  const text = String(value || '').toLowerCase();
+  return (needles || []).some((needle) => text.includes(String(needle).toLowerCase()));
+}
+
+function cloneJson(value) {
+  try {
+    return JSON.parse(JSON.stringify(value || {}));
+  } catch (_) {
+    return {};
+  }
 }
 
 async function pageHtml(params) {
@@ -461,14 +693,14 @@ async function detachDebugger(tabId) {
   attachedTabs.delete(tabId);
 }
 
-function waitForTabComplete(tabId, timeoutMs) {
+function waitForTabComplete(tabId, timeoutMs, expectedUrl = null) {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       chrome.tabs.onUpdated.removeListener(listener);
       reject(new Error(`Timed out waiting for tab ${tabId}`));
     }, timeoutMs);
     const listener = (updatedTabId, changeInfo, tab) => {
-      if (updatedTabId === tabId && changeInfo.status === 'complete') {
+      if (updatedTabId === tabId && changeInfo.status === 'complete' && tabUrlMatches(tab?.url, expectedUrl)) {
         clearTimeout(timer);
         chrome.tabs.onUpdated.removeListener(listener);
         resolve(tab);
@@ -476,13 +708,26 @@ function waitForTabComplete(tabId, timeoutMs) {
     };
     chrome.tabs.onUpdated.addListener(listener);
     chrome.tabs.get(tabId).then((tab) => {
-      if (tab.status === 'complete') {
+      if (tab.status === 'complete' && tabUrlMatches(tab.url, expectedUrl)) {
         clearTimeout(timer);
         chrome.tabs.onUpdated.removeListener(listener);
         resolve(tab);
       }
     }).catch(() => {});
   });
+}
+
+function tabUrlMatches(actual, expected) {
+  if (!expected || expected === 'about:blank') return true;
+  try {
+    const actualUrl = new URL(actual || '');
+    const expectedUrl = new URL(expected);
+    return actualUrl.href === expectedUrl.href ||
+      `${actualUrl.origin}${actualUrl.pathname}` === `${expectedUrl.origin}${expectedUrl.pathname}` ||
+      (actualUrl.origin === expectedUrl.origin && actualUrl.pathname.replace(/\/$/, '') === expectedUrl.pathname.replace(/\/$/, ''));
+  } catch {
+    return String(actual || '') === String(expected || '');
+  }
 }
 
 function normalizeTab(tab) {

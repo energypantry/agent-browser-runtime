@@ -76,6 +76,7 @@ require_cmd node
 require_cmd python3
 
 FETCH_JSON="/tmp/brs-smoke-fetch-${TASK_PREFIX}.json"
+PROBE_JSON="/tmp/brs-smoke-probe-${TASK_PREFIX}.json"
 EXTRACT_JSON="/tmp/brs-smoke-extract-${TASK_PREFIX}.json"
 ERROR_EXTRACT_STDOUT="/tmp/brs-smoke-error-extract-${TASK_PREFIX}.out"
 ERROR_EXTRACT_STDERR="/tmp/brs-smoke-error-extract-${TASK_PREFIX}.err"
@@ -126,6 +127,10 @@ if status.get('extensionConnected') is not True:
     raise SystemExit(f"extension not connected: {status}")
 if status.get('stealth', {}).get('enabled') is not True:
     raise SystemExit(f"stealth policy not enabled: {status.get('stealth')}")
+if status.get('stealth', {}).get('fingerprint', {}).get('generated') is not True:
+    raise SystemExit(f"generated fingerprint missing: {status.get('stealth')}")
+if status.get('platformPacing', {}).get('enabled') is not True:
+    raise SystemExit(f"platform pacing missing: {status.get('platformPacing')}")
 print('extensionConnected=true')
 print('humanize=', status.get('humanize'))
 print('stealth=', status.get('stealth'))
@@ -139,6 +144,27 @@ log "one-shot fetch with humanize=${HUMANIZE_LEVEL}"
   --screenshot \
   --humanize "${HUMANIZE_LEVEL}" >"${FETCH_JSON}"
 validate_artifacts "${FETCH_JSON}"
+
+log "generic session probe"
+./cli/brs.js probe-session generic \
+  --url "${TARGET_URL}" \
+  --agent "${AGENT_ID}" \
+  --task "${TASK_PREFIX}-probe" \
+  --include-storage-state \
+  --humanize off >"${PROBE_JSON}"
+validate_artifacts "${PROBE_JSON}"
+python3 - "${PROBE_JSON}" <<'PY'
+import json, sys
+payload=json.load(open(sys.argv[1]))
+probe=payload.get('probe') or {}
+if probe.get('platform') != 'generic' or 'connected' not in probe or not probe.get('currentUrl'):
+    raise SystemExit(f'bad session probe payload: {probe}')
+if not isinstance(probe.get('storageState'), dict):
+    raise SystemExit(f'missing storageState: {probe}')
+if not any(a.get('kind') == 'session-probe' and a.get('bytes', 0) > 0 for a in payload.get('artifacts', [])):
+    raise SystemExit(f'missing session-probe artifact: {payload.get("artifacts")}')
+print('verified session probe', probe.get('reason'), probe.get('currentUrl'))
+PY
 
 log "extractor smoke"
 ./cli/brs.js extract example.extract.js "${TARGET_URL}" \

@@ -20,6 +20,7 @@ await app.register(websocket);
 
 const store = new Store(leaseDbPath);
 const extension = new ExtensionRpc(app.log);
+const platformLastActionAt = new Map();
 
 app.get('/extension', { websocket: true }, (socket) => {
   app.log.info('Chrome companion extension connected');
@@ -33,13 +34,7 @@ app.get('/health', async () => ({
 }));
 
 app.get('/status', async () => ({
-  ok: true,
-  cdpEndpoint,
-  novncUrl,
-  extensionConnected: extension.connected,
-  humanize: { level: defaultHumanizeLevel },
-  stealth: stealthStatus(),
-  leases: store.listLeases({ activeOnly: true }).map((lease) => ({ ...lease, tabs: store.listTabs(lease.id) })),
+  ...(await runtimeStatus()),
 }));
 
 
@@ -358,6 +353,81 @@ app.post('/jobs/fetch-page', async (request) => {
   return { lease: store.getLease(lease.id), tab: created.tab, artifacts };
 });
 
+app.post('/sessions/probe', async (request, reply) => {
+  const body = request.body || {};
+  const platform = String(body.platform || 'generic').toLowerCase();
+  const url = body.url || defaultPlatformUrl(platform);
+  const pacing = await enforcePlatformCooldown(platform, body);
+  if (pacing.rejected) {
+    return reply.code(429).send({ ok: false, error: 'PLATFORM_COOLDOWN', platform, ...pacing });
+  }
+  const nowIso = new Date().toISOString();
+  const lease = store.createLease({
+    id: `probe_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    agentId: String(body.agentId || 'agent'),
+    taskId: String(body.taskId || `probe:${platform}`),
+    domain: inferDomain(url),
+    mode: String(body.mode || 'session-probe'),
+    chromeGroupId: null,
+    title: compactTitle(body.title || `${body.agentId || 'agent'} / ${platform} probe`),
+    color: body.color || colorFor(`${platform}:${url}`),
+    status: 'allocated',
+    createdAt: nowIso,
+    expiresAt: new Date(Date.now() + readPositiveNumber(body.ttlMs, 10 * 60 * 1000)).toISOString(),
+  });
+
+  let created = null;
+  const artifacts = [];
+  try {
+    created = await extension.call('tabs.create', {
+      url,
+      groupTitle: lease.title,
+      groupColor: lease.color,
+      active: Boolean(body.active),
+      waitUntilCompleteMs: readPositiveNumber(body.waitUntilCompleteMs, 15000),
+    }, { timeoutMs: readPositiveNumber(body.timeoutMs, 60000) });
+    store.updateLeaseGroup(lease.id, created.chromeGroupId);
+    store.addTab({ id: created.tab.id, leaseId: lease.id, url: created.tab.url || url, title: created.tab.title, status: 'open', createdAt: new Date().toISOString() });
+    await humanizeTab(created.tab.id, body, 'job-open');
+
+    const probe = await extension.call('session.probe', {
+      tabId: created.tab.id,
+      platform,
+      includeCookies: Boolean(body.includeCookies),
+      includeStorageState: Boolean(body.includeStorageState),
+      waitUntilCompleteMs: readPositiveNumber(body.waitUntilCompleteMs, 15000),
+    }, { timeoutMs: readPositiveNumber(body.probeTimeoutMs, 45000) });
+    artifacts.push(await writeArtifact({ leaseId: lease.id, tabId: created.tab.id, kind: 'session-probe', ext: 'json', mimeType: 'application/json', data: JSON.stringify(probe, null, 2) }));
+
+    if (body.saveHtml) {
+      const htmlResult = await extension.call('page.html', { tabId: created.tab.id }, { timeoutMs: readPositiveNumber(body.htmlTimeoutMs, 30000) });
+      artifacts.push(await writeArtifact({ leaseId: lease.id, tabId: created.tab.id, kind: 'html', ext: 'html', mimeType: 'text/html', data: htmlResult.html || '' }));
+    }
+    if (body.screenshot) {
+      await humanizeTab(created.tab.id, body, 'before-screenshot');
+      const shot = await extension.call('screenshot.capture', { tabId: created.tab.id, fullPage: Boolean(body.fullPage), format: body.format || 'jpeg', quality: readPositiveNumber(body.quality, 80) }, { timeoutMs: readPositiveNumber(body.screenshotTimeoutMs, 45000) });
+      artifacts.push(await writeArtifact({ leaseId: lease.id, tabId: created.tab.id, kind: 'screenshot', ext: shot.format === 'png' ? 'png' : 'jpg', mimeType: shot.format === 'png' ? 'image/png' : 'image/jpeg', base64: shot.data }));
+    }
+    if (!body.keepOpen) {
+      await extension.call('tabs.close', { tabId: created.tab.id }).catch(() => {});
+      store.closeTab(created.tab.id);
+      store.releaseLease(lease.id);
+    }
+    return { lease: store.getLease(lease.id), tab: created.tab, probe, pacing, artifacts };
+  } catch (error) {
+    const normalized = normalizeError(error);
+    if (created?.tab?.id) {
+      artifacts.push(await writeArtifact({ leaseId: lease.id, tabId: created.tab.id, kind: 'error', ext: 'json', mimeType: 'application/json', data: JSON.stringify({ platform, url, error: normalized }, null, 2) }));
+      if (!body.keepOpen) {
+        await extension.call('tabs.close', { tabId: created.tab.id }).catch(() => {});
+        store.closeTab(created.tab.id);
+      }
+    }
+    if (!body.keepOpen) store.releaseLease(lease.id, 'released');
+    return reply.code(500).send({ ok: false, lease: store.getLease(lease.id), platform, url, pacing, error: normalized, artifacts });
+  }
+});
+
 
 async function humanizeTab(tabId, body = {}, stage = 'action') {
   const policy = buildHumanizePolicy(body.humanizePolicy || body.humanize || {});
@@ -527,27 +597,194 @@ function readPositiveNumber(value, fallback) {
   return Number.isFinite(num) && num > 0 ? num : fallback;
 }
 
-function stealthStatus() {
+function readNonNegativeNumber(value, fallback) {
+  const num = Number(value);
+  return Number.isFinite(num) && num >= 0 ? num : fallback;
+}
+
+async function runtimeStatus() {
+  const runtimeConfig = await readRuntimeConfig();
+  const tlsGateway = await tlsGatewayStatus();
+  return {
+    ok: true,
+    cdpEndpoint,
+    novncUrl,
+    extensionConnected: extension.connected,
+    humanize: { level: defaultHumanizeLevel },
+    platformPacing: platformPacingStatus(),
+    stealth: stealthStatus(runtimeConfig?.config, tlsGateway),
+    tlsGateway,
+    runtimeConfig: runtimeConfig?.config || null,
+    leases: store.listLeases({ activeOnly: true }).map((lease) => ({ ...lease, tabs: store.listTabs(lease.id) })),
+  };
+}
+
+async function readRuntimeConfig() {
+  if (!extension.connected) return null;
+  try {
+    return await extension.call('runtime.config', {}, { timeoutMs: 5000, connectTimeoutMs: 1000 });
+  } catch (error) {
+    app.log.warn({ error, errorMessage: error?.message }, 'runtime config read failed');
+    return null;
+  }
+}
+
+function stealthStatus(runtimeConfig = null, tlsGateway = null) {
   const tlsProxyServer = String(process.env.BRS_TLS_GATEWAY_PROXY_SERVER || '').trim();
   const browserProxyServer = String(process.env.BROWSER_PROXY_SERVER || '').trim();
   const extraHeaders = parseJsonObject(process.env.BRS_EXTRA_HTTP_HEADERS_JSON);
+  const runtimeStealth = runtimeConfig?.stealth || {};
+  const fingerprint = runtimeConfig?.fingerprint || null;
   return {
-    enabled: readEnvFlag('BRS_STEALTH_ENABLED', true),
-    profile: String(process.env.BRS_STEALTH_PROFILE || 'standard'),
-    headersEnabled: readEnvFlag('BRS_FINGERPRINT_HEADERS_ENABLED', true),
-    patchesEnabled: readEnvFlag('BRS_FINGERPRINT_PATCHES_ENABLED', true),
-    canvasNoise: readEnvFlag('BRS_CANVAS_NOISE_ENABLED', true),
-    audioNoise: readEnvFlag('BRS_AUDIO_NOISE_ENABLED', true),
-    acceptLanguage: String(process.env.BRS_ACCEPT_LANGUAGE || 'en-US,en;q=0.9'),
-    locale: String(process.env.BRS_LOCALE || 'en-US'),
-    timezone: String(process.env.BRS_STEALTH_TIMEZONE || process.env.BROWSER_TIMEZONE || 'Asia/Shanghai'),
-    extraHeaderKeys: Object.keys(extraHeaders),
+    enabled: runtimeStealth.enabled ?? readEnvFlag('BRS_STEALTH_ENABLED', true),
+    profile: runtimeStealth.profile || String(process.env.BRS_STEALTH_PROFILE || 'standard'),
+    headersEnabled: runtimeStealth.headersEnabled ?? readEnvFlag('BRS_FINGERPRINT_HEADERS_ENABLED', true),
+    patchesEnabled: runtimeStealth.patchesEnabled ?? readEnvFlag('BRS_FINGERPRINT_PATCHES_ENABLED', true),
+    canvasNoise: runtimeStealth.canvasNoise ?? readEnvFlag('BRS_CANVAS_NOISE_ENABLED', true),
+    audioNoise: runtimeStealth.audioNoise ?? readEnvFlag('BRS_AUDIO_NOISE_ENABLED', true),
+    acceptLanguage: runtimeStealth.acceptLanguage || String(process.env.BRS_ACCEPT_LANGUAGE || 'en-US,en;q=0.9'),
+    locale: runtimeStealth.locale || String(process.env.BRS_LOCALE || 'en-US'),
+    timezone: runtimeStealth.timezone || String(process.env.BRS_STEALTH_TIMEZONE || process.env.BROWSER_TIMEZONE || 'Asia/Shanghai'),
+    platform: runtimeStealth.platform || String(process.env.BRS_PLATFORM || ''),
+    userAgent: runtimeStealth.userAgent ? 'configured' : (process.env.BRS_USER_AGENT ? 'configured' : 'default'),
+    webgl: {
+      vendor: runtimeStealth.webglVendor || String(process.env.BRS_WEBGL_VENDOR || ''),
+      renderer: runtimeStealth.webglRenderer || String(process.env.BRS_WEBGL_RENDERER || ''),
+    },
+    hardware: {
+      hardwareConcurrency: runtimeStealth.hardwareConcurrency ?? null,
+      deviceMemory: runtimeStealth.deviceMemory ?? null,
+      maxTouchPoints: runtimeStealth.maxTouchPoints ?? null,
+    },
+    fingerprint,
+    extraHeaderKeys: runtimeStealth.extraHeaderKeys || Object.keys(extraHeaders),
     tlsGateway: {
-      enabled: readEnvFlag('BRS_TLS_GATEWAY_ENABLED', true),
+      enabled: tlsGateway?.enabled ?? readEnvFlag('BRS_TLS_GATEWAY_ENABLED', true),
       configured: Boolean(tlsProxyServer),
-      active: Boolean(readEnvFlag('BRS_TLS_GATEWAY_ENABLED', true) && tlsProxyServer && !browserProxyServer),
+      active: tlsGateway?.active ?? Boolean(readEnvFlag('BRS_TLS_GATEWAY_ENABLED', true) && tlsProxyServer && !browserProxyServer),
+      healthOk: tlsGateway?.health?.ok ?? null,
     },
   };
+}
+
+async function enforcePlatformCooldown(platform, body = {}) {
+  if (body.cooldown === false || body.platformCooldown === false) return { enabled: false, skipped: true, reason: 'request-disabled' };
+  if (!readEnvFlag('BRS_PLATFORM_COOLDOWN_ENABLED', true)) return { enabled: false, skipped: true, reason: 'env-disabled' };
+  const cooldownSeconds = platformCooldownSeconds(platform);
+  if (cooldownSeconds <= 0) return { enabled: true, platform, cooldownSeconds, waitedMs: 0 };
+  const key = String(platform || 'generic').toLowerCase();
+  const now = Date.now();
+  const last = platformLastActionAt.get(key) || 0;
+  const waitMs = Math.max(0, last + cooldownSeconds * 1000 - now);
+  if (waitMs > 0) {
+    if (String(body.cooldownMode || 'wait').toLowerCase() === 'reject') {
+      return { enabled: true, platform: key, cooldownSeconds, waitMs, rejected: true };
+    }
+    await sleep(waitMs);
+  }
+  platformLastActionAt.set(key, Date.now());
+  return { enabled: true, platform: key, cooldownSeconds, waitedMs: waitMs };
+}
+
+function platformPacingStatus() {
+  const platforms = ['reddit', 'facebook', 'linkedin', 'instagram', 'manualChallenge'];
+  return {
+    enabled: readEnvFlag('BRS_PLATFORM_COOLDOWN_ENABLED', true),
+    cooldownSeconds: Object.fromEntries(platforms.map((platform) => [platform, platformCooldownSeconds(platform)])),
+    lastActionAt: Object.fromEntries(Array.from(platformLastActionAt.entries()).map(([platform, timestamp]) => [platform, new Date(timestamp).toISOString()])),
+  };
+}
+
+function platformCooldownSeconds(platform) {
+  const key = String(platform || 'generic').toLowerCase().replace(/[^a-z0-9]/g, '_');
+  const defaults = {
+    reddit: 45,
+    facebook: 60,
+    linkedin: 180,
+    instagram: 240,
+    manualchallenge: 300,
+    manual_challenge: 300,
+    generic: 0,
+  };
+  const envName = `BRS_PLATFORM_COOLDOWN_${key.toUpperCase()}_SECONDS`;
+  return readNonNegativeNumber(process.env[envName], defaults[key] ?? 0);
+}
+
+async function tlsGatewayStatus() {
+  const enabled = readEnvFlag('BRS_TLS_GATEWAY_ENABLED', true);
+  const proxyServer = String(process.env.BRS_TLS_GATEWAY_PROXY_SERVER || '').trim();
+  const browserProxyServer = String(process.env.BROWSER_PROXY_SERVER || '').trim();
+  const baseUrl = String(process.env.BRS_TLS_GATEWAY_BASE_URL || process.env.TLS_GATEWAY_BASE_URL || '').trim();
+  const healthUrl = String(process.env.BRS_TLS_GATEWAY_HEALTH_URL || '').trim() || gatewayUrl(baseUrl, process.env.BRS_TLS_GATEWAY_HEALTH_PATH || '/health');
+  const statsUrl = String(process.env.BRS_TLS_GATEWAY_STATS_URL || '').trim() || gatewayUrl(baseUrl, process.env.BRS_TLS_GATEWAY_STATS_PATH || '/stats');
+  const timeoutMs = readPositiveNumber(process.env.BRS_TLS_GATEWAY_TIMEOUT_MS, 1500);
+  const status = {
+    enabled,
+    proxyConfigured: Boolean(proxyServer),
+    baseConfigured: Boolean(baseUrl),
+    active: Boolean(enabled && proxyServer && !browserProxyServer),
+    overriddenByBrowserProxy: Boolean(browserProxyServer),
+    health: { configured: Boolean(healthUrl), ok: null, url: redactUrl(healthUrl), error: null, data: null },
+    stats: { configured: Boolean(statsUrl), ok: null, url: redactUrl(statsUrl), error: null, data: null },
+  };
+  if (!enabled) return status;
+  if (healthUrl) {
+    const health = await fetchJsonWithTimeout(healthUrl, timeoutMs);
+    status.health = { ...status.health, ...health };
+  }
+  if (statsUrl) {
+    const stats = await fetchJsonWithTimeout(statsUrl, timeoutMs);
+    status.stats = { ...status.stats, ...stats };
+  }
+  return status;
+}
+
+function gatewayUrl(baseUrl, path) {
+  if (!baseUrl) return null;
+  try {
+    return new URL(path || '/', baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`).href;
+  } catch {
+    return null;
+  }
+}
+
+async function fetchJsonWithTimeout(url, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), Math.max(1, Number(timeoutMs) || 1));
+  try {
+    const response = await fetch(url, { signal: controller.signal, headers: { accept: 'application/json' } });
+    const text = await response.text();
+    let data = text;
+    try { data = text ? JSON.parse(text) : null; } catch {}
+    return { ok: response.ok, status: response.status, data, error: response.ok ? null : `HTTP_${response.status}` };
+  } catch (error) {
+    return { ok: false, status: null, data: null, error: error?.name === 'AbortError' ? 'TIMEOUT' : (error?.message || String(error)) };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function redactUrl(value) {
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    if (url.username) url.username = '***';
+    if (url.password) url.password = '***';
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+function defaultPlatformUrl(platform) {
+  const urls = {
+    linkedin: 'https://www.linkedin.com/feed/',
+    reddit: 'https://www.reddit.com/',
+    facebook: 'https://www.facebook.com/',
+    instagram: 'https://www.instagram.com/',
+    generic: 'https://example.com/',
+  };
+  return urls[String(platform || '').toLowerCase()] || urls.generic;
 }
 
 function readEnvFlag(name, fallback = true) {

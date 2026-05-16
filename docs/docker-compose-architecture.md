@@ -23,7 +23,8 @@ Responsibilities:
 - lease allocation: `agentId`, `taskId`, `domain`, `mode`, TTL
 - source of truth for leases/tabs/artifacts in SQLite
 - JSON-RPC request/response channel to the companion extension
-- one-shot jobs: `fetch-page`, `extract`
+- one-shot jobs: `fetch-page`, `extract`, `sessions/probe`
+- runtime status: sanitized extension-loaded fingerprint config, platform pacing policy, and optional TLS gateway health/stats
 - artifact writing under `artifacts/YYYY-MM-DD/<leaseId>/`
 
 ### chrome-runtime
@@ -34,7 +35,8 @@ Responsibilities:
 - noVNC manual handoff for login/Captcha
 - loads `extension/` at browser launch
 - generates `runtime-config.js` from `BRS_*` env vars for the companion extension
-- applies an optional proxy/TLS gateway when `BRS_TLS_GATEWAY_PROXY_SERVER` is set
+- generates a coherent seed-based fingerprint profile unless `BRS_GENERATE_FINGERPRINT_ENABLED=0`
+- applies an optional proxy/TLS gateway when `BRS_TLS_GATEWAY_PROXY_SERVER` is set and disables QUIC for that proxied path
 - exposes an internal CDP proxy for diagnostics; the MVP control path uses the extension debugger API for page ops
 
 ### companion extension
@@ -43,7 +45,8 @@ Responsibilities:
 
 - create tabs and real Chrome Tab Groups
 - attach `chrome.debugger` to background tabs
-- apply default browser consistency policy: fingerprint headers, locale/timezone overrides, and main-world browser-surface patches
+- apply default browser consistency policy: generated fingerprint headers, UA metadata, locale/timezone overrides, and main-world browser-surface patches
+- probe platform session state through CDP cookies, optional storage-state export, and lightweight page login/challenge signals
 - capture HTML and screenshots
 - close/release tabs when broker requests
 

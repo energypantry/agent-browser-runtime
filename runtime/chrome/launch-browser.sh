@@ -51,10 +51,24 @@ elif [ -n "${EFFECTIVE_PROXY_SERVER}" ]; then
 fi
 if [ -n "${EFFECTIVE_PROXY_SERVER}" ]; then
   CHROME_PROXY_ARGS+=("--proxy-server=${EFFECTIVE_PROXY_SERVER}")
+  CHROME_PROXY_ARGS+=("--disable-quic")
 fi
 if [ -n "${BROWSER_PROXY_BYPASS_LIST:-}" ]; then
   echo "Using proxy bypass list: ${BROWSER_PROXY_BYPASS_LIST}"
   CHROME_PROXY_ARGS+=("--proxy-bypass-list=${BROWSER_PROXY_BYPASS_LIST}")
+fi
+
+DETECTED_CHROME_FULL_VERSION=""
+DETECTED_CHROME_MAJOR=""
+if command -v chromium >/dev/null 2>&1; then
+  CHROME_VERSION_TEXT="$(chromium --version 2>/dev/null || true)"
+  if [[ "${CHROME_VERSION_TEXT}" =~ ([0-9]+)\.([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then
+    DETECTED_CHROME_FULL_VERSION="${BASH_REMATCH[0]}"
+    DETECTED_CHROME_MAJOR="${BASH_REMATCH[1]}"
+    export BRS_DETECTED_CHROME_FULL_VERSION="${DETECTED_CHROME_FULL_VERSION}"
+    export BRS_DETECTED_CHROME_MAJOR="${DETECTED_CHROME_MAJOR}"
+    echo "Detected Chromium version: ${DETECTED_CHROME_FULL_VERSION}"
+  fi
 fi
 
 EXTENSION_ARGS=()
@@ -64,9 +78,11 @@ if [ -n "${BROWSER_EXTENSION_DIR:-}" ] && [ -f "${BROWSER_EXTENSION_DIR}/manifes
   mkdir -p "${GENERATED_EXTENSION_DIR}"
   cp -a "${BROWSER_EXTENSION_DIR}/." "${GENERATED_EXTENSION_DIR}/"
   python3 - "${GENERATED_EXTENSION_DIR}/runtime-config.js" <<'PY'
+import hashlib
 import json
 import os
 import pathlib
+import random
 import sys
 
 output = pathlib.Path(sys.argv[1])
@@ -103,17 +119,207 @@ def json_list(name, fallback):
             print(f"Ignoring invalid {name}: {error}", file=sys.stderr)
     return fallback
 
-accept_language = env("BRS_ACCEPT_LANGUAGE", "en-US,en;q=0.9")
-derived_languages = [
-    part.split(";")[0].strip()
-    for part in accept_language.split(",")
-    if part.split(";")[0].strip()
-]
+def seed_int():
+    raw = env("BRS_FINGERPRINT_SEED", env("FINGERPRINT_SEED", "1000"))
+    try:
+        return int(raw), raw
+    except ValueError:
+        digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+        return int(digest[:8], 16), raw
+
+def merge_headers(base, overrides):
+    result = dict(base)
+    index = {key.lower(): key for key in result}
+    for key, value in overrides.items():
+        if value is None or value == "":
+            continue
+        existing = index.get(str(key).lower())
+        if existing:
+            result[existing] = str(value)
+        else:
+            result[str(key)] = str(value)
+    return result
+
+def languages_from_accept_language(value):
+    return [
+        part.split(";")[0].strip()
+        for part in value.split(",")
+        if part.split(";")[0].strip()
+    ]
+
+def chrome_version(rng, major):
+    stable_builds = {
+        122: [6261, 6262],
+        123: [6312],
+        124: [6367],
+        125: [6422],
+        126: [6478],
+        127: [6533],
+        128: [6613],
+        129: [6668],
+        130: [6723],
+    }
+    build = rng.choice(stable_builds.get(major, [6723, 6778, 6834]))
+    patch = rng.choice([69, 79, 85, 91, 99, 113, 128, 141])
+    return f"{major}.0.{build}.{patch}"
+
+def platform_profile(platform_key, rng):
+    profiles = {
+        "macos": {
+            "uaPlatform": "Macintosh; Intel Mac OS X 10_15_7",
+            "navigatorPlatform": "MacIntel",
+            "uaChPlatform": "macOS",
+            "platformVersion": rng.choice(["13.6.7", "14.6.1", "15.0.0"]),
+            "architecture": "arm",
+            "bitness": "64",
+            "webglVendor": "Google Inc. (Apple)",
+            "webglRenderers": [
+                "ANGLE (Apple, ANGLE Metal Renderer: Apple M1 Pro, Unspecified Version)",
+                "ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)",
+                "ANGLE (Apple, ANGLE Metal Renderer: Apple M3, Unspecified Version)",
+            ],
+            "hardwareConcurrency": rng.choice([8, 10, 12]),
+            "deviceMemory": rng.choice([8, 16]),
+            "maxTouchPoints": 0,
+        },
+        "windows": {
+            "uaPlatform": "Windows NT 10.0; Win64; x64",
+            "navigatorPlatform": "Win32",
+            "uaChPlatform": "Windows",
+            "platformVersion": "10.0.0",
+            "architecture": "x86",
+            "bitness": "64",
+            "webglVendor": "Google Inc. (NVIDIA)",
+            "webglRenderers": [
+                "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)",
+                "ANGLE (Intel, Intel(R) UHD Graphics 770 Direct3D11 vs_5_0 ps_5_0, D3D11)",
+                "ANGLE (AMD, AMD Radeon RX 6600 Direct3D11 vs_5_0 ps_5_0, D3D11)",
+            ],
+            "hardwareConcurrency": rng.choice([8, 12, 16]),
+            "deviceMemory": rng.choice([8, 16]),
+            "maxTouchPoints": 0,
+        },
+        "linux": {
+            "uaPlatform": "X11; Linux x86_64",
+            "navigatorPlatform": "Linux x86_64",
+            "uaChPlatform": "Linux",
+            "platformVersion": "6.5.0",
+            "architecture": "x86",
+            "bitness": "64",
+            "webglVendor": "Google Inc. (Intel)",
+            "webglRenderers": [
+                "ANGLE (Intel, Mesa Intel(R) UHD Graphics, OpenGL 4.6)",
+                "ANGLE (AMD, AMD Radeon Graphics, OpenGL 4.6)",
+            ],
+            "hardwareConcurrency": rng.choice([8, 12, 16]),
+            "deviceMemory": rng.choice([8, 16]),
+            "maxTouchPoints": 0,
+        },
+    }
+    return profiles.get(platform_key, profiles["macos"])
+
+def build_fingerprint():
+    enabled = flag("BRS_GENERATE_FINGERPRINT_ENABLED", True)
+    seed, raw_seed = seed_int()
+    rng = random.Random(seed)
+    platform_key = env("BRS_FINGERPRINT_PLATFORM", env("FINGERPRINT_PLATFORM", "macos")).lower()
+    platform = platform_profile(platform_key, rng)
+    major = int(env("BRS_CHROME_MAJOR", env("BRS_DETECTED_CHROME_MAJOR", "124")))
+    full_version = env("BRS_CHROME_FULL_VERSION", env("BRS_DETECTED_CHROME_FULL_VERSION", chrome_version(rng, major)))
+    browser_brand = env("BRS_BROWSER_BRAND", "Google Chrome")
+    not_brand_version = str(rng.choice([8, 24, 99]))
+    brands = [
+        {"brand": "Not.A/Brand", "version": not_brand_version},
+        {"brand": "Chromium", "version": str(major)},
+        {"brand": browser_brand, "version": str(major)},
+    ]
+    rng.shuffle(brands)
+    full_version_list = [
+        {"brand": item["brand"], "version": full_version if item["brand"] != "Not.A/Brand" else f"{not_brand_version}.0.0.0"}
+        for item in brands
+    ]
+    accept_language = env("BRS_ACCEPT_LANGUAGE", "en-US,en;q=0.9")
+    languages = json_list("BRS_LANGUAGES_JSON", languages_from_accept_language(accept_language) or ["en-US", "en"])
+    user_agent = (
+        f"Mozilla/5.0 ({platform['uaPlatform']}) AppleWebKit/537.36 "
+        f"(KHTML, like Gecko) Chrome/{full_version} Safari/537.36"
+    )
+    metadata = {
+        "brands": brands,
+        "fullVersion": full_version,
+        "fullVersionList": full_version_list,
+        "platform": platform["uaChPlatform"],
+        "platformVersion": platform["platformVersion"],
+        "architecture": platform["architecture"],
+        "model": "",
+        "mobile": False,
+        "bitness": platform["bitness"],
+        "wow64": False,
+    }
+    sec_ch_ua = ", ".join([f'"{item["brand"]}";v="{item["version"]}"' for item in brands])
+    sec_ch_full = ", ".join([f'"{item["brand"]}";v="{item["version"]}"' for item in full_version_list])
+    generated_headers = {
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        "Accept-Language": accept_language,
+        "Upgrade-Insecure-Requests": "1",
+        "Sec-Fetch-Site": "none",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-User": "?1",
+        "Sec-Fetch-Dest": "document",
+        "sec-ch-ua": sec_ch_ua,
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": f'"{platform["uaChPlatform"]}"',
+        "sec-ch-ua-platform-version": f'"{platform["platformVersion"]}"',
+        "sec-ch-ua-arch": f'"{platform["architecture"]}"',
+        "sec-ch-ua-bitness": f'"{platform["bitness"]}"',
+        "sec-ch-ua-model": '""',
+        "sec-ch-ua-full-version": f'"{full_version}"',
+        "sec-ch-ua-full-version-list": sec_ch_full,
+    }
+    if env("BRS_STEALTH_PROFILE", "standard").lower() == "linkedin":
+        generated_headers["Origin"] = "https://www.linkedin.com"
+    return {
+        "enabled": enabled,
+        "seed": raw_seed,
+        "platformKey": platform_key,
+        "chromeMajor": major,
+        "chromeFullVersion": full_version,
+        "browserBrand": browser_brand,
+        "acceptLanguage": accept_language,
+        "languages": languages,
+        "navigatorPlatform": platform["navigatorPlatform"],
+        "userAgent": user_agent,
+        "userAgentMetadata": metadata,
+        "webglVendor": platform["webglVendor"],
+        "webglRenderer": rng.choice(platform["webglRenderers"]),
+        "hardwareConcurrency": platform["hardwareConcurrency"],
+        "deviceMemory": platform["deviceMemory"],
+        "maxTouchPoints": platform["maxTouchPoints"],
+        "headers": generated_headers,
+    }
+
+fingerprint = build_fingerprint()
+accept_language = env("BRS_ACCEPT_LANGUAGE", fingerprint["acceptLanguage"])
+derived_languages = languages_from_accept_language(accept_language)
+explicit_headers = json_object("BRS_EXTRA_HTTP_HEADERS_JSON")
+generated_headers = fingerprint["headers"] if fingerprint["enabled"] else {}
+extra_headers = merge_headers(generated_headers, explicit_headers)
 tls_proxy_server = env("BRS_TLS_GATEWAY_PROXY_SERVER", "")
 tls_enabled = flag("BRS_TLS_GATEWAY_ENABLED", True)
 browser_proxy_server = env("BROWSER_PROXY_SERVER", "")
+explicit_user_agent = env("BRS_USER_AGENT", "")
+explicit_platform = env("BRS_PLATFORM", "")
 config = {
     "brokerWs": env("BROWSER_RUNTIME_BROKER_WS", "ws://broker:17890/extension"),
+    "fingerprint": {
+        "generated": fingerprint["enabled"],
+        "seed": fingerprint["seed"],
+        "platformKey": fingerprint["platformKey"],
+        "chromeMajor": fingerprint["chromeMajor"],
+        "chromeFullVersion": fingerprint["chromeFullVersion"],
+        "browserBrand": fingerprint["browserBrand"],
+        "headerKeys": sorted(extra_headers.keys()),
+    },
     "stealth": {
         "enabled": flag("BRS_STEALTH_ENABLED", True),
         "profile": env("BRS_STEALTH_PROFILE", "standard"),
@@ -122,14 +328,18 @@ config = {
         "canvasNoise": flag("BRS_CANVAS_NOISE_ENABLED", True),
         "audioNoise": flag("BRS_AUDIO_NOISE_ENABLED", True),
         "acceptLanguage": accept_language,
-        "languages": json_list("BRS_LANGUAGES_JSON", derived_languages or ["en-US", "en"]),
+        "languages": json_list("BRS_LANGUAGES_JSON", fingerprint["languages"] or derived_languages or ["en-US", "en"]),
         "locale": env("BRS_LOCALE", "en-US"),
         "timezone": env("BRS_STEALTH_TIMEZONE", env("BROWSER_TIMEZONE", "Asia/Shanghai")),
-        "platform": env("BRS_PLATFORM", ""),
-        "userAgent": env("BRS_USER_AGENT", ""),
-        "webglVendor": env("BRS_WEBGL_VENDOR", ""),
-        "webglRenderer": env("BRS_WEBGL_RENDERER", ""),
-        "extraHeaders": json_object("BRS_EXTRA_HTTP_HEADERS_JSON"),
+        "platform": explicit_platform or (fingerprint["navigatorPlatform"] if fingerprint["enabled"] else ""),
+        "userAgent": explicit_user_agent or (fingerprint["userAgent"] if fingerprint["enabled"] else ""),
+        "userAgentMetadata": fingerprint["userAgentMetadata"] if fingerprint["enabled"] and not explicit_user_agent else None,
+        "webglVendor": env("BRS_WEBGL_VENDOR", fingerprint["webglVendor"] if fingerprint["enabled"] else ""),
+        "webglRenderer": env("BRS_WEBGL_RENDERER", fingerprint["webglRenderer"] if fingerprint["enabled"] else ""),
+        "hardwareConcurrency": fingerprint["hardwareConcurrency"] if fingerprint["enabled"] else None,
+        "deviceMemory": fingerprint["deviceMemory"] if fingerprint["enabled"] else None,
+        "maxTouchPoints": fingerprint["maxTouchPoints"] if fingerprint["enabled"] else None,
+        "extraHeaders": extra_headers,
         "tlsGateway": {
             "enabled": tls_enabled,
             "proxyServer": tls_proxy_server,
