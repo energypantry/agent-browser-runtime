@@ -4,6 +4,9 @@ services:
   tls-gateway:
     build:
       context: ./tls-gateway
+      args:
+        ALPINE_MIRROR: ${ALPINE_MIRROR:-https://dl-cdn.alpinelinux.org/alpine}
+        GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
     container_name: agent-browser-runtime-tls-gateway
     init: true
     environment:
@@ -86,6 +89,9 @@ services:
   chrome-runtime:
     build:
       context: ./runtime/chrome
+      args:
+        DEBIAN_MIRROR: ${DEBIAN_MIRROR:-http://deb.debian.org/debian}
+        DEBIAN_SECURITY_MIRROR: ${DEBIAN_SECURITY_MIRROR:-http://deb.debian.org/debian-security}
     container_name: agent-browser-runtime-chrome
     init: true
     shm_size: "2gb"

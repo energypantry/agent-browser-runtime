@@ -1,21 +1,29 @@
 FROM golang:1.21-alpine AS builder
 
 WORKDIR /build
+ARG ALPINE_MIRROR=https://dl-cdn.alpinelinux.org/alpine
+RUN sed -i "s|https://dl-cdn.alpinelinux.org/alpine|${ALPINE_MIRROR}|g" /etc/apk/repositories
 RUN apk add --no-cache git ca-certificates
 
 # Copy dependency definitions first to keep Docker layer caching useful.
-COPY go.mod ./
-RUN go mod download
+COPY go.mod go.sum ./
+ARG GOPROXY=https://proxy.golang.org,direct
+RUN GOPROXY="${GOPROXY}" go mod download
 
 # Copy source after dependencies.
 COPY *.go ./
 
-# Normalize dependencies and build a static gateway binary.
-RUN go mod tidy && \
-    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o tls-gateway .
+# Build a static gateway binary for the current Docker platform.
+ARG TARGETOS=linux
+ARG TARGETARCH
+ARG GOPROXY=https://proxy.golang.org,direct
+RUN target_arch="${TARGETARCH:-$(go env GOARCH)}"; \
+    CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${target_arch}" GOPROXY="${GOPROXY}" go build -ldflags='-s -w' -o tls-gateway .
 
 FROM golang:1.21-alpine AS runtime
 
+ARG ALPINE_MIRROR=https://dl-cdn.alpinelinux.org/alpine
+RUN sed -i "s|https://dl-cdn.alpinelinux.org/alpine|${ALPINE_MIRROR}|g" /etc/apk/repositories
 RUN apk add --no-cache ca-certificates tzdata curl
 WORKDIR /app
 COPY --from=builder /build/tls-gateway /app/tls-gateway

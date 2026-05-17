@@ -10,15 +10,17 @@ ENV DEBIAN_FRONTEND=noninteractive \
     SCREEN_DEPTH=24 \
     FINGERPRINT_SEED=1000
 
+ARG DEBIAN_MIRROR=http://deb.debian.org/debian
+ARG DEBIAN_SECURITY_MIRROR=http://deb.debian.org/debian-security
 RUN set -eux; \
     if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
-      sed -i 's|http://deb.debian.org/debian|http://mirrors.aliyun.com/debian|g' /etc/apt/sources.list.d/debian.sources; \
-      sed -i 's|http://deb.debian.org/debian-security|http://mirrors.aliyun.com/debian-security|g' /etc/apt/sources.list.d/debian.sources; \
+      sed -i "s|http://deb.debian.org/debian-security|${DEBIAN_SECURITY_MIRROR}|g" /etc/apt/sources.list.d/debian.sources; \
+      sed -i "s|http://deb.debian.org/debian|${DEBIAN_MIRROR}|g" /etc/apt/sources.list.d/debian.sources; \
     else \
       printf '%s\n' \
-        'deb http://mirrors.aliyun.com/debian bookworm main' \
-        'deb http://mirrors.aliyun.com/debian bookworm-updates main' \
-        'deb http://mirrors.aliyun.com/debian-security bookworm-security main' \
+        "deb ${DEBIAN_MIRROR} bookworm main" \
+        "deb ${DEBIAN_MIRROR} bookworm-updates main" \
+        "deb ${DEBIAN_SECURITY_MIRROR} bookworm-security main" \
         > /etc/apt/sources.list; \
     fi; \
     printf 'Acquire::Retries "5";\nAcquire::http::Timeout "30";\nAcquire::https::Timeout "30";\n' > /etc/apt/apt.conf.d/80-retries; \
