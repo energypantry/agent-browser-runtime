@@ -10,7 +10,7 @@ The point is simple: agents work through a shared, visible browser runtime inste
 - Browser runtime: Chromium/Chrome in Docker with CDP, Xvfb, x11vnc, noVNC, and a persistent profile mount.
 - Companion extension: Chrome extension that owns real tabs, real Tab Groups, debugger/CDP calls, screenshots, HTML capture, session probes, and humanized primitives.
 - CLI: `./cli/brs.js` for status, fetch, session probes, extractor jobs, artifacts, and leases.
-- Skills: `SKILL.md` for runtime usage and `skills/agent-browser-runtime-deploy/SKILL.md` for agent-led local deployment.
+- Skills: Codex and OpenClaw compatible skill folders under `skills/`.
 - Examples: generic extractor examples only. Site-specific/private extractors are intentionally out of tree.
 
 ## Quick start
@@ -97,7 +97,10 @@ The repository is designed to be publishable as a generic runtime package:
 - `cli/brs.js` — small operator/client CLI
 - `scripts/smoke-test.sh` — full local runtime regression test
 - `extractors/` — generic extractor scripts with optional params schema
-- `skills/agent-browser-runtime-deploy/` — deployment skill for other agents
+- `skills/codex/agent-browser-runtime/` — Codex skill for using the runtime
+- `skills/codex/agent-browser-runtime-deploy/` — Codex skill for deploying/verifying the runtime
+- `skills/openclaw/agent-browser-runtime/` — OpenClaw-compatible skill for using the runtime
+- `skills/openclaw/agent-browser-runtime-deploy/` — OpenClaw-compatible skill for deploying/verifying the runtime
 - `data/`, `artifacts/`, `runtime/profile/` — runtime state, gitignored
 
 ## Operator APIs

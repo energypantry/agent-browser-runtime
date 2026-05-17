@@ -50,7 +50,7 @@ Run:
 - Keep `.env`, `data/`, `artifacts/`, and `runtime/profile/` local and uncommitted.
 - Keep site-specific/private extractors outside the public repository unless they are intentionally generic examples.
 
-## Anti-bot / Browser Consistency Controls
+## Browser Consistency Controls
 
 Agent Browser Runtime intentionally exposes its anti-bot/risk-control browser consistency layer:
 
