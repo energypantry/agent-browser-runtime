@@ -4,6 +4,14 @@ Agent Browser Runtime is a compose-managed real Chrome runtime for AI agents. It
 
 The point is simple: agents work through a shared, visible browser runtime instead of fighting over ad hoc headless sessions.
 
+## Responsible use only
+
+This project is published only for learning, research, and responsible technical exploration.
+
+You must comply with applicable laws, platform terms, privacy rules, account-safety boundaries, and rate-limit or access-control policies. Do not use Agent Browser Runtime for illegal activity, unauthorized access, credential or session abuse, privacy-invasive collection, spam, fraud, harassment, or any attempt to harm, overload, or disrupt a service.
+
+If a target requires login, consent, payment, Captcha, MFA, or another human/account-safety checkpoint, use manual handoff and respect the outcome.
+
 ## What is included
 
 - Broker: Node/Fastify HTTP + WebSocket control plane for leases, jobs, artifacts, pacing, and state.
