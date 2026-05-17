@@ -211,6 +211,12 @@ app.post('/tabs/:tabId/screenshot', async (request) => {
   return writeArtifact({ leaseId: body.leaseId, tabId, kind: 'screenshot', ext, mimeType: `image/${ext === 'jpg' ? 'jpeg' : 'png'}`, base64: result.data });
 });
 
+app.post('/tabs/:tabId/ui/move', async (request) => runUiAction(Number(request.params.tabId), 'move', request.body || {}));
+app.post('/tabs/:tabId/ui/click', async (request) => runUiAction(Number(request.params.tabId), 'click', request.body || {}));
+app.post('/tabs/:tabId/ui/type', async (request) => runUiAction(Number(request.params.tabId), 'type', request.body || {}));
+app.post('/tabs/:tabId/ui/press', async (request) => runUiAction(Number(request.params.tabId), 'press', request.body || {}));
+app.post('/tabs/:tabId/ui/scroll', async (request) => runUiAction(Number(request.params.tabId), 'scroll', request.body || {}));
+app.post('/tabs/:tabId/ui/wait-for', async (request) => runUiAction(Number(request.params.tabId), 'waitFor', request.body || {}));
 
 app.post('/jobs/extract', async (request, reply) => {
   const body = request.body || {};
@@ -287,6 +293,7 @@ app.post('/jobs/extract', async (request, reply) => {
         finalUrl: created.tab.url,
         pageHtml: htmlResult.html || '',
         tab: created.tab,
+        ui: createTabUi(created.tab.id, body),
         params,
         attempt,
       });
@@ -464,6 +471,56 @@ async function humanizeTab(tabId, body = {}, stage = 'action') {
     app.log.warn({ error, errorMessage: error?.message, errorCode: error?.code, tabId, stage }, 'humanize action failed');
   }
   return null;
+}
+
+async function runUiAction(tabId, action, body = {}) {
+  const method = `ui.${action}`;
+  const actionTimeoutMs = readPositiveNumber(body.timeoutMs, 45000);
+  const rpcTimeoutMs = action === 'waitFor' ? actionTimeoutMs + 1500 : actionTimeoutMs;
+  const result = await extension.call(method, { ...body, tabId }, { timeoutMs: rpcTimeoutMs });
+  if (body.pauseAfterMs) {
+    await extension.call('humanize.pause', {
+      policy: buildHumanizePolicy(body.humanizePolicy || body.humanize || {}),
+      minMs: body.pauseAfterMs,
+      maxMs: body.pauseAfterMs,
+    }, { timeoutMs: readPositiveNumber(body.humanizeTimeoutMs, 60000) });
+  }
+  return result;
+}
+
+function createTabUi(tabId, defaults = {}) {
+  const withDefaults = (params = {}) => ({
+    humanize: defaults.humanize,
+    humanizePolicy: defaults.humanizePolicy,
+    ...params,
+  });
+  return {
+    move: (params = {}) => runUiAction(tabId, 'move', withDefaults(params)),
+    click: (params = {}) => runUiAction(tabId, 'click', withDefaults(params)),
+    type: (paramsOrText = {}, text = null) => runUiAction(tabId, 'type', withDefaults(normalizeTypeArgs(paramsOrText, text))),
+    press: (keyOrParams = {}) => runUiAction(tabId, 'press', withDefaults(typeof keyOrParams === 'string' ? { key: keyOrParams } : keyOrParams)),
+    scroll: (params = {}) => runUiAction(tabId, 'scroll', withDefaults(params)),
+    waitFor: (params = {}) => runUiAction(tabId, 'waitFor', withDefaults(params)),
+    html: async (params = {}) => {
+      await humanizeTab(tabId, withDefaults(params), 'before-html');
+      return extension.call('page.html', { tabId }, { timeoutMs: readPositiveNumber(params.timeoutMs, 30000) });
+    },
+    screenshot: async (params = {}) => {
+      await humanizeTab(tabId, withDefaults(params), 'before-screenshot');
+      return extension.call('screenshot.capture', {
+        tabId,
+        fullPage: Boolean(params.fullPage),
+        format: params.format || 'jpeg',
+        quality: readPositiveNumber(params.quality, 80),
+      }, { timeoutMs: readPositiveNumber(params.timeoutMs, 45000) });
+    },
+  };
+}
+
+function normalizeTypeArgs(paramsOrText, text) {
+  if (typeof paramsOrText === 'string') return { text: paramsOrText };
+  if (text != null) return { ...(paramsOrText || {}), text };
+  return paramsOrText || {};
 }
 
 function buildHumanizePolicy(input = {}) {

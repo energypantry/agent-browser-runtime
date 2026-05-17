@@ -7,7 +7,9 @@ export const schema = {
   },
 };
 
-export async function extract({ pageHtml, url, params }) {
+export async function extract({ pageHtml, url, params, ui }) {
+  // Site workflow scripts can use ui.type/click/press/scroll/waitFor before reading fresh HTML.
+  void ui;
   const result = {
     url,
     title: pageHtml.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1]?.trim() || null,

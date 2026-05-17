@@ -122,6 +122,18 @@ items = []
 for key in sorted(os.environ):
     if key.startswith("BRS_") or key.startswith("FINGERPRINT_") or key in exact:
         items.append(f"{key}={os.environ.get(key, '')}")
+extension_dir = os.environ.get("BROWSER_EXTENSION_DIR", "")
+if extension_dir and os.path.isdir(extension_dir):
+    for root, _, files in os.walk(extension_dir):
+        for name in sorted(files):
+            path = os.path.join(root, name)
+            rel = os.path.relpath(path, extension_dir)
+            try:
+                with open(path, "rb") as handle:
+                    digest = hashlib.sha256(handle.read()).hexdigest()
+            except OSError:
+                continue
+            items.append(f"extension:{rel}={digest}")
 print(hashlib.sha256("\n".join(items).encode("utf-8")).hexdigest()[:12])
 PY
 )"

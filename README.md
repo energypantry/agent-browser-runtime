@@ -23,7 +23,7 @@ Commercial use, resale, commercial hosted service use, paid product integration,
 - Broker: Node/Fastify HTTP + WebSocket control plane for leases, jobs, artifacts, pacing, and state.
 - Browser runtime: Chromium/Chrome in Docker with CDP, Xvfb, x11vnc, noVNC, and a persistent profile mount.
 - TLS gateway: local HTTP proxy service wired into Chromium at launch time, with gateway health/stats surfaced by the broker.
-- Companion extension: Chrome extension that owns real tabs, real Tab Groups, debugger/CDP calls, screenshots, HTML capture, session probes, and humanized primitives.
+- Companion extension: Chrome extension that owns real tabs, real Tab Groups, debugger/CDP calls, screenshots, HTML capture, session probes, humanized primitives, and real UI action primitives.
 - CLI: `./cli/brs.js` for status, fetch, session probes, extractor jobs, artifacts, and leases.
 - Skills: Codex and OpenClaw compatible skill folders under `skills/`.
 - Examples: generic extractor examples only. Site-specific/private extractors are intentionally out of tree.
@@ -76,6 +76,7 @@ The runtime has a default-on anti-bot/risk-control compatibility layer so browse
 - Canvas/audio noise controls and explicit WebGL/user-agent/platform overrides for compatibility testing.
 - Platform cooldowns plus per-job humanized warmup, mousemove, scroll, and pause primitives.
 - All-site browser interaction discipline: after the initial exact URL/probe entry point, agents must complete workflows through visible UI controls with keyboard input, cursor movement/clicking, scrolling, hover, and pauses instead of synthesized URL jumps, querystring shortcuts, DOM-click dispatch, or backend/API shortcuts.
+- Runtime UI action primitives exposed through `/tabs/:tabId/ui/*` and extractor `ui` helpers: `move`, `click`, `type`, `press`, `scroll`, and `waitFor`.
 - Startup-level proxy/TLS-gateway integration with QUIC disabled on the proxied path and health/stats surfacing in `status`.
 - High-trust login-host exclusions through `BRS_STEALTH_EXCLUDED_HOSTS`; `accounts.google.com` is excluded by default because spoofing can harm account login flows.
 

@@ -85,6 +85,12 @@ async function dispatch(method, params) {
     case 'humanize.warmup': return humanizeWarmup(params);
     case 'humanize.scroll': return humanizeScroll(params);
     case 'humanize.pause': return humanizePause(params);
+    case 'ui.move': return uiMove(params);
+    case 'ui.click': return uiClick(params);
+    case 'ui.type': return uiType(params);
+    case 'ui.press': return uiPress(params);
+    case 'ui.scroll': return uiScroll(params);
+    case 'ui.waitFor': return uiWaitFor(params);
     default: throw new Error(`Unsupported method: ${method}`);
   }
 }
@@ -540,6 +546,116 @@ async function humanizePause(params) {
   return { ok: true, action: 'pause', sleptMs, level: policy.level };
 }
 
+async function uiMove(params) {
+  const tabId = Number(params.tabId);
+  const point = await resolveUiPoint(tabId, params);
+  await realMouseMove(tabId, point, Number(params.durationMs || 280));
+  return { ok: true, action: 'move', point };
+}
+
+async function uiClick(params) {
+  const tabId = Number(params.tabId);
+  const point = await resolveUiPoint(tabId, params);
+  await realMouseMove(tabId, point, Number(params.moveDurationMs || params.durationMs || 320));
+  await attachDebugger(tabId);
+  const button = normalizeMouseButton(params.button);
+  const clickCount = Math.max(1, Math.min(3, Number(params.clickCount || 1)));
+  await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchMouseEvent', {
+    type: 'mousePressed',
+    x: point.x,
+    y: point.y,
+    button,
+    clickCount,
+  });
+  await sleep(Math.max(20, Math.min(250, Number(params.holdMs || 55))));
+  await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchMouseEvent', {
+    type: 'mouseReleased',
+    x: point.x,
+    y: point.y,
+    button,
+    clickCount,
+  });
+  return { ok: true, action: 'click', point, button, clickCount };
+}
+
+async function uiType(params) {
+  const tabId = Number(params.tabId);
+  const text = String(params.text ?? '');
+  if (!text && params.text !== '') throw new Error('text is required');
+  if (params.selector || params.textSelector || params.targetText || isFinitePoint(params)) {
+    await uiClick({ ...params, clickCount: 1 });
+  }
+  await attachDebugger(tabId);
+  const minDelayMs = Math.max(0, Number(params.minDelayMs ?? 35));
+  const maxDelayMs = Math.max(minDelayMs, Number(params.maxDelayMs ?? 140));
+  for (const char of text) {
+    await chrome.debugger.sendCommand({ tabId }, 'Input.insertText', { text: char });
+    if (maxDelayMs > 0) await sleep(randomInt(minDelayMs, maxDelayMs));
+  }
+  return { ok: true, action: 'type', length: text.length };
+}
+
+async function uiPress(params) {
+  const tabId = Number(params.tabId);
+  const keyInfo = keyDescriptor(params.key);
+  await attachDebugger(tabId);
+  await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchKeyEvent', {
+    type: 'keyDown',
+    key: keyInfo.key,
+    code: keyInfo.code,
+    windowsVirtualKeyCode: keyInfo.keyCode,
+    nativeVirtualKeyCode: keyInfo.keyCode,
+    text: keyInfo.text,
+    unmodifiedText: keyInfo.text,
+  });
+  await sleep(Math.max(10, Math.min(220, Number(params.holdMs || 45))));
+  await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchKeyEvent', {
+    type: 'keyUp',
+    key: keyInfo.key,
+    code: keyInfo.code,
+    windowsVirtualKeyCode: keyInfo.keyCode,
+    nativeVirtualKeyCode: keyInfo.keyCode,
+  });
+  return { ok: true, action: 'press', key: keyInfo.key };
+}
+
+async function uiScroll(params) {
+  const tabId = Number(params.tabId);
+  const vp = await viewportInfo(tabId);
+  const fallback = ensureStartPoint(tabId, vp);
+  const point = isFinitePoint(params) ? sanitizePoint(params.x, params.y) : fallback;
+  await realMouseMove(tabId, point, Number(params.moveDurationMs || 160));
+  await attachDebugger(tabId);
+  const direction = params.direction === 'up' ? -1 : 1;
+  const count = Math.max(1, Math.min(20, Number(params.count || 1)));
+  const deltaY = Number.isFinite(Number(params.deltaY)) ? Number(params.deltaY) : direction * 520;
+  for (let i = 0; i < count; i += 1) {
+    await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchMouseEvent', {
+      type: 'mouseWheel',
+      x: point.x,
+      y: point.y,
+      deltaX: Number(params.deltaX || 0),
+      deltaY,
+    });
+    await sleep(Math.max(20, Math.min(1500, Number(params.pauseMs || randomInt(220, 680)))));
+  }
+  return { ok: true, action: 'scroll', point, deltaY, count };
+}
+
+async function uiWaitFor(params) {
+  const tabId = Number(params.tabId);
+  const timeoutMs = Math.max(1, Number(params.timeoutMs || 10000));
+  const pollMs = Math.max(50, Number(params.pollMs || 250));
+  const startedAt = Date.now();
+  let last = null;
+  while (Date.now() - startedAt <= timeoutMs) {
+    last = await resolveUiTarget(tabId, params).catch((error) => ({ ok: false, error: error?.message || String(error) }));
+    if (last?.found) return { ok: true, action: 'waitFor', found: true, target: last, waitedMs: Date.now() - startedAt };
+    await sleep(pollMs);
+  }
+  return { ok: false, action: 'waitFor', found: false, target: last, waitedMs: Date.now() - startedAt };
+}
+
 function normalizeHumanizePolicy(policy) {
   const level = String(policy.level || 'standard').toLowerCase();
   const multiplier = level === 'enhanced' ? 1.35 : level === 'minimal' ? 0.55 : 1;
@@ -642,6 +758,109 @@ async function dispatchWheel(tabId, deltaY) {
       return window.__BRS_LAST_SCROLL__;
     },
   }).catch(() => {});
+}
+
+async function realMouseMove(tabId, to, durationMs = 260) {
+  await attachDebugger(tabId);
+  const vp = await viewportInfo(tabId);
+  const from = ensureStartPoint(tabId, vp);
+  const distance = Math.hypot(to.x - from.x, to.y - from.y);
+  const steps = Math.max(3, Math.min(32, Math.ceil(distance / 36)));
+  const points = curvePoints(from, to, steps).map((point) => sanitizePoint(point.x, point.y));
+  const pauseMs = Math.max(0, Math.min(200, Math.floor(Number(durationMs || 0) / Math.max(1, points.length))));
+  for (const point of points) {
+    await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchMouseEvent', {
+      type: 'mouseMoved',
+      x: point.x,
+      y: point.y,
+      button: 'none',
+    });
+    if (pauseMs) await sleep(pauseMs);
+  }
+  lastMousePointByTab.set(tabId, sanitizePoint(to.x, to.y));
+}
+
+async function resolveUiPoint(tabId, params) {
+  if (isFinitePoint(params)) return sanitizePoint(params.x, params.y);
+  const target = await resolveUiTarget(tabId, params);
+  if (!target?.found) throw new Error(target?.error || 'UI target not found');
+  return sanitizePoint(target.x, target.y);
+}
+
+async function resolveUiTarget(tabId, params = {}) {
+  await attachDebugger(tabId);
+  const selector = params.selector || params.textSelector || null;
+  const text = params.targetText || params.label || null;
+  if (!selector && !text) return { found: false, error: 'selector or targetText is required' };
+  const result = await chrome.debugger.sendCommand({ tabId }, 'Runtime.evaluate', {
+    expression: `(() => {
+      const selector = ${JSON.stringify(selector)};
+      const wantedText = ${JSON.stringify(text)};
+      const visible = (el) => {
+        if (!el) return false;
+        const style = window.getComputedStyle(el);
+        const rect = el.getBoundingClientRect();
+        return style.visibility !== 'hidden' && style.display !== 'none' && rect.width > 0 && rect.height > 0;
+      };
+      let element = selector ? document.querySelector(selector) : null;
+      if (!element && wantedText) {
+        const needle = String(wantedText).trim().toLowerCase();
+        const matchesText = (candidate) => {
+          const textValue = (candidate.innerText || candidate.value || candidate.getAttribute('aria-label') || candidate.getAttribute('title') || '').trim().toLowerCase();
+          return textValue && textValue.includes(needle) && visible(candidate);
+        };
+        const interactive = Array.from(document.querySelectorAll('button,a,input,textarea,select,label,[role="button"],[contenteditable="true"],[tabindex]'));
+        const readable = Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6,p,span,div,main,section,article'));
+        element = interactive.find(matchesText) || readable.find(matchesText) || null;
+      }
+      if (!element || !visible(element)) return { found: false };
+      element.scrollIntoView({ block: 'center', inline: 'center', behavior: 'auto' });
+      const rect = element.getBoundingClientRect();
+      return {
+        found: true,
+        x: Math.round(rect.left + rect.width / 2),
+        y: Math.round(rect.top + rect.height / 2),
+        tagName: element.tagName,
+        selector,
+        text: (element.innerText || element.value || element.getAttribute('aria-label') || '').trim().slice(0, 160),
+      };
+    })()`,
+    returnByValue: true,
+    awaitPromise: true,
+  });
+  return result?.result?.value || { found: false };
+}
+
+function isFinitePoint(params = {}) {
+  return Number.isFinite(Number(params.x)) && Number.isFinite(Number(params.y));
+}
+
+function sanitizePoint(x, y) {
+  return { x: Math.max(0, Math.round(Number(x) || 0)), y: Math.max(0, Math.round(Number(y) || 0)) };
+}
+
+function normalizeMouseButton(button) {
+  const normalized = String(button || 'left').toLowerCase();
+  return ['left', 'right', 'middle', 'none'].includes(normalized) ? normalized : 'left';
+}
+
+function keyDescriptor(key) {
+  const name = String(key || '').trim();
+  if (!name) throw new Error('key is required');
+  const map = {
+    Enter: ['Enter', 'Enter', 13, '\r'],
+    Tab: ['Tab', 'Tab', 9, '\t'],
+    Escape: ['Escape', 'Escape', 27, ''],
+    Backspace: ['Backspace', 'Backspace', 8, ''],
+    Delete: ['Delete', 'Delete', 46, ''],
+    ArrowDown: ['ArrowDown', 'ArrowDown', 40, ''],
+    ArrowUp: ['ArrowUp', 'ArrowUp', 38, ''],
+    ArrowLeft: ['ArrowLeft', 'ArrowLeft', 37, ''],
+    ArrowRight: ['ArrowRight', 'ArrowRight', 39, ''],
+    Space: [' ', 'Space', 32, ' '],
+  };
+  const entry = map[name] || (name.length === 1 ? [name, `Key${name.toUpperCase()}`, name.toUpperCase().charCodeAt(0), name] : [name, name, 0, '']);
+  return { key: entry[0], code: entry[1], keyCode: entry[2], text: entry[3] };
 }
 
 function cubicBezier(p0, p1, p2, p3, t) {

@@ -158,6 +158,19 @@ After entry, agents must complete site workflows through visible UI controls: ke
 
 If a workflow needs a browser action that the broker/extension does not expose yet, use noVNC manual handoff or add a real browser primitive before automating that workflow.
 
+### UI action primitives
+
+The broker exposes first-class UI actions for site workflows after the initial entry URL. These actions execute through the companion extension and Chrome debugger input events rather than DOM click dispatch.
+
+- `POST /tabs/:tabId/ui/move` with `{ "x": 320, "y": 240 }` or `{ "selector": "button" }`
+- `POST /tabs/:tabId/ui/click` with `{ "selector": "button[type=submit]" }`, `{ "targetText": "Next" }`, or coordinates
+- `POST /tabs/:tabId/ui/type` with `{ "selector": "input[name=q]", "text": "search terms" }`
+- `POST /tabs/:tabId/ui/press` with `{ "key": "Enter" }`
+- `POST /tabs/:tabId/ui/scroll` with `{ "direction": "down", "count": 2 }` or `{ "deltaY": 650 }`
+- `POST /tabs/:tabId/ui/wait-for` with `{ "selector": ".result", "timeoutMs": 10000 }` or `{ "targetText": "Results" }`
+
+Extractor scripts receive a tab-bound `ui` helper with the same actions: `ui.move`, `ui.click`, `ui.type`, `ui.press`, `ui.scroll`, and `ui.waitFor`. They also receive `ui.html()` and `ui.screenshot()` helpers for post-interaction evidence capture.
+
 ### `POST /jobs/fetch-page`
 
 One-shot MVP workflow:
@@ -207,7 +220,7 @@ Expose recent jobs plus job logs and related artifacts for internal observabilit
 
 ### `POST /jobs/extract`
 
-Runs `/extractors/<name>.extract.js`; extractor must export `extract({ url, finalUrl, pageHtml, tab, params, attempt })`. It may export `schema` / `paramsSchema` for simple params validation. Broker supports `maxAttempts` / `retries` and writes `error` artifacts on failed attempts. The broker writes a JSON result artifact and can optionally save HTML/screenshot artifacts.
+Runs `/extractors/<name>.extract.js`; extractor must export `extract({ url, finalUrl, pageHtml, tab, ui, params, attempt })`. It may export `schema` / `paramsSchema` for simple params validation. Broker supports `maxAttempts` / `retries` and writes `error` artifacts on failed attempts. The broker writes a JSON result artifact and can optionally save HTML/screenshot artifacts.
 
 CLI:
 

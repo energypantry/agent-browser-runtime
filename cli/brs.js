@@ -51,6 +51,12 @@ async function main() {
     if (!leaseId || !url) throw new Error('open requires <leaseId> <url>');
     return print(await api('POST', `/leases/${encodeURIComponent(leaseId)}/tabs`, { url, ...parseOptions(args.slice(2)) }));
   }
+  if (cmd === 'ui') {
+    const tabId = args[0];
+    const action = normalizeUiAction(args[1]);
+    if (!tabId || !action) throw new Error('ui requires <tabId> <move|click|type|press|scroll|wait-for>');
+    return print(await api('POST', `/tabs/${encodeURIComponent(tabId)}/ui/${action}`, parseOptions(args.slice(2))));
+  }
   if (cmd === 'extract') {
     const extractor = args[0];
     const url = args[1];
@@ -161,6 +167,13 @@ function parseJsonOption(value, fallback) {
   try { return JSON.parse(String(value)); } catch (error) { throw new Error(`invalid JSON option: ${value}`); }
 }
 
+function normalizeUiAction(action) {
+  const normalized = String(action || '').replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`).toLowerCase();
+  const aliases = { waitfor: 'wait-for', wait: 'wait-for' };
+  const value = aliases[normalized] || normalized;
+  return ['move', 'click', 'type', 'press', 'scroll', 'wait-for'].includes(value) ? value : null;
+}
+
 function coerce(value) {
   if (value === 'true') return true;
   if (value === 'false') return false;
@@ -170,7 +183,7 @@ function coerce(value) {
 
 function print(obj) { console.log(JSON.stringify(obj, null, 2)); }
 function help() {
-  console.log(`Agent Browser Runtime CLI\n\nUsage:\n  brs status\n  brs health\n  brs tab-audit\n  brs tab-reconcile\n  brs leases\n  brs jobs [--status success]\n  brs job <jobId>\n  brs artifacts [--leaseId <leaseId>] [--kind screenshot]\n  brs artifact <artifactId>\n  brs artifact-download <artifactId> <outputPath>\n  brs artifact-delete <artifactId>\n  brs cleanup-artifacts [--olderThanDays 7] [--dryRun false]\n  brs acquire --agentId demo-agent --taskId smoke --domain example.com\n  brs open <leaseId> <url>\n  brs fetch <url> [--agent demo-agent] [--task smoke] [--screenshot] [--full-page] [--keep-open] [--humanize enhanced]\n  brs probe-session <platform> [--url <url>] [--include-cookies] [--include-storage-state] [--cooldown false] [--screenshot] [--save-html] [--keep-open] [--humanize off]\n  brs extract <extractor.extract.js> <url> [--agent demo-agent] [--task smoke] [--screenshot] [--save-html] [--humanize enhanced] [--params '{"limit":3}'] [--max-attempts 2]\n  brs release <leaseId> [--keep-tabs]\n\nEnv:\n  BRS_BROKER_URL=${DEFAULT_BROKER}`);
+  console.log(`Agent Browser Runtime CLI\n\nUsage:\n  brs status\n  brs health\n  brs tab-audit\n  brs tab-reconcile\n  brs leases\n  brs jobs [--status success]\n  brs job <jobId>\n  brs artifacts [--leaseId <leaseId>] [--kind screenshot]\n  brs artifact <artifactId>\n  brs artifact-download <artifactId> <outputPath>\n  brs artifact-delete <artifactId>\n  brs cleanup-artifacts [--olderThanDays 7] [--dryRun false]\n  brs acquire --agentId demo-agent --taskId smoke --domain example.com\n  brs open <leaseId> <url>\n  brs ui <tabId> <move|click|type|press|scroll|wait-for> [--selector input[name=q]] [--text query] [--key Enter]\n  brs fetch <url> [--agent demo-agent] [--task smoke] [--screenshot] [--full-page] [--keep-open] [--humanize enhanced]\n  brs probe-session <platform> [--url <url>] [--include-cookies] [--include-storage-state] [--cooldown false] [--screenshot] [--save-html] [--keep-open] [--humanize off]\n  brs extract <extractor.extract.js> <url> [--agent demo-agent] [--task smoke] [--screenshot] [--save-html] [--humanize enhanced] [--params '{"limit":3}'] [--max-attempts 2]\n  brs release <leaseId> [--keep-tabs]\n\nEnv:\n  BRS_BROKER_URL=${DEFAULT_BROKER}`);
 }
 
 main().catch((error) => {
