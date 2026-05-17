@@ -75,6 +75,7 @@ The runtime has a default-on anti-bot/risk-control compatibility layer so browse
 - Main-world stealth patching at `document_start`: webdriver, languages, platform, vendor, plugins/mimeTypes, Chrome runtime stubs, permissions, media codecs, WebGL, canvas, and audio surfaces.
 - Canvas/audio noise controls and explicit WebGL/user-agent/platform overrides for compatibility testing.
 - Platform cooldowns plus per-job humanized warmup, mousemove, scroll, and pause primitives.
+- All-site browser interaction discipline: after the initial exact URL/probe entry point, agents must complete workflows through visible UI controls with keyboard input, cursor movement/clicking, scrolling, hover, and pauses instead of synthesized URL jumps, querystring shortcuts, DOM-click dispatch, or backend/API shortcuts.
 - Startup-level proxy/TLS-gateway integration with QUIC disabled on the proxied path and health/stats surfacing in `status`.
 - High-trust login-host exclusions through `BRS_STEALTH_EXCLUDED_HOSTS`; `accounts.google.com` is excluded by default because spoofing can harm account login flows.
 

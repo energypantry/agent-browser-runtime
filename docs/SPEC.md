@@ -150,6 +150,14 @@ Capture a JPEG/PNG screenshot into an artifact.
 
 Task bodies can include `humanize` / `humanizePolicy` or the CLI flag `--humanize minimal|standard|enhanced|off`. The broker applies task-level pacing around open/navigate/html/screenshot; the companion extension executes low-level mousemove, wheel/scroll, and pause primitives. Defaults come from `BOT_HUMANIZE_LEVEL`. Avoid page-side `setTimeout` animation loops in background tabs; Chrome can throttle them heavily.
 
+### Browser interaction discipline
+
+This is a runtime contract for every target site. Direct navigation is reserved for initial entry to an exact user-provided URL, platform/session probes, or returning to a previously captured exact URL for inspection.
+
+After entry, agents must complete site workflows through visible UI controls: keyboard input for search terms and forms, cursor movement before clicking, real clicks, scrolling, hover, pauses, and normal front-end state transitions. Search, filters, pagination, profile/result selection, login, checkout, and account-safety flows should not be replaced by synthesized destination/search URLs, querystring mutation, `location` jumps, dispatched DOM clicks, or backend/API shortcuts.
+
+If a workflow needs a browser action that the broker/extension does not expose yet, use noVNC manual handoff or add a real browser primitive before automating that workflow.
+
 ### `POST /jobs/fetch-page`
 
 One-shot MVP workflow:
