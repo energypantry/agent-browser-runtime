@@ -16,7 +16,6 @@ COPY *.go ./
 # Build a static gateway binary for the current Docker platform.
 ARG TARGETOS=linux
 ARG TARGETARCH
-ARG GOPROXY=https://proxy.golang.org,direct
 RUN target_arch="${TARGETARCH:-$(go env GOARCH)}"; \
     CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${target_arch}" GOPROXY="${GOPROXY}" go build -ldflags='-s -w' -o tls-gateway .
 
