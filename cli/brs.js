@@ -51,6 +51,65 @@ async function main() {
     if (!leaseId || !url) throw new Error('open requires <leaseId> <url>');
     return print(await api('POST', `/leases/${encodeURIComponent(leaseId)}/tabs`, { url, ...parseOptions(args.slice(2)) }));
   }
+  if (cmd === 'browse-start') {
+    const url = args[0];
+    if (!url) throw new Error('browse-start requires <url>');
+    const options = parseOptions(args.slice(1));
+    const lease = await api('POST', '/leases', {
+      agentId: options.agent || options.agentId || 'cli',
+      taskId: options.task || options.taskId || 'browse',
+      domain: options.domain || inferDomain(url),
+      mode: options.mode || 'shared-context-tab-group',
+      ttlMs: options.ttlMs,
+      title: options.title,
+      color: options.color,
+    });
+    const opened = await api('POST', `/leases/${encodeURIComponent(lease.id)}/tabs`, {
+      url,
+      active: options.active !== false,
+      waitUntilCompleteMs: options.waitMs || options.waitUntilCompleteMs,
+      timeoutMs: options.timeoutMs,
+      humanize: options.humanize || options.humanizeLevel,
+    });
+    return print({ lease: opened.lease, tab: opened.tab });
+  }
+  if (cmd === 'browse-nav') {
+    const leaseId = args[0];
+    const tabId = args[1];
+    const url = args[2];
+    if (!leaseId || !tabId || !url) throw new Error('browse-nav requires <leaseId> <tabId> <url>');
+    const options = parseOptions(args.slice(3));
+    return print(await api('POST', `/tabs/${encodeURIComponent(tabId)}/fetch-page`, {
+      url,
+      leaseId,
+      screenshot: Boolean(options.screenshot),
+      fullPage: Boolean(options.fullPage),
+      active: Boolean(options.active),
+      waitUntilCompleteMs: options.waitMs || options.waitUntilCompleteMs,
+      timeoutMs: options.timeoutMs,
+      htmlTimeoutMs: options.htmlTimeoutMs,
+      screenshotTimeoutMs: options.screenshotTimeoutMs,
+      humanize: options.humanize || options.humanizeLevel,
+    }));
+  }
+  if (cmd === 'browse-html') {
+    const leaseId = args[0];
+    const tabId = args[1];
+    if (!leaseId || !tabId) throw new Error('browse-html requires <leaseId> <tabId>');
+    return print(await api('POST', `/tabs/${encodeURIComponent(tabId)}/html`, { leaseId, ...parseOptions(args.slice(2)) }));
+  }
+  if (cmd === 'browse-screenshot') {
+    const leaseId = args[0];
+    const tabId = args[1];
+    if (!leaseId || !tabId) throw new Error('browse-screenshot requires <leaseId> <tabId>');
+    return print(await api('POST', `/tabs/${encodeURIComponent(tabId)}/screenshot`, { leaseId, ...parseOptions(args.slice(2)) }));
+  }
+  if (cmd === 'browse-end') {
+    const id = args[0];
+    if (!id) throw new Error('browse-end requires <leaseId>');
+    const closeTabs = !args.includes('--keep-tabs');
+    return print(await api('DELETE', `/leases/${encodeURIComponent(id)}?closeTabs=${closeTabs}`));
+  }
   if (cmd === 'ui') {
     const tabId = args[0];
     const action = normalizeUiAction(args[1]);
@@ -84,6 +143,23 @@ async function main() {
     const url = args[0];
     if (!url) throw new Error('fetch requires <url>');
     const options = parseOptions(args.slice(1));
+    const leaseId = options.leaseId || options.lease;
+    const tabId = options.tabId || options.tab;
+    if ((leaseId && !tabId) || (!leaseId && tabId)) throw new Error('fetch tab reuse requires both --lease-id and --tab-id');
+    if (leaseId && tabId) {
+      return print(await api('POST', `/tabs/${encodeURIComponent(tabId)}/fetch-page`, {
+        url,
+        leaseId,
+        screenshot: options.screenshot !== false,
+        fullPage: Boolean(options.fullPage),
+        active: Boolean(options.active),
+        waitUntilCompleteMs: options.waitMs || options.waitUntilCompleteMs,
+        timeoutMs: options.timeoutMs,
+        htmlTimeoutMs: options.htmlTimeoutMs,
+        screenshotTimeoutMs: options.screenshotTimeoutMs,
+        humanize: options.humanize || options.humanizeLevel,
+      }));
+    }
     return print(await api('POST', '/jobs/fetch-page', {
       url,
       agentId: options.agent || options.agentId || 'cli',
@@ -167,6 +243,10 @@ function parseJsonOption(value, fallback) {
   try { return JSON.parse(String(value)); } catch (error) { throw new Error(`invalid JSON option: ${value}`); }
 }
 
+function inferDomain(url) {
+  try { return new URL(url).hostname; } catch { return undefined; }
+}
+
 function normalizeUiAction(action) {
   const normalized = String(action || '').replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`).toLowerCase();
   const aliases = { waitfor: 'wait-for', wait: 'wait-for' };
@@ -183,7 +263,7 @@ function coerce(value) {
 
 function print(obj) { console.log(JSON.stringify(obj, null, 2)); }
 function help() {
-  console.log(`Agent Browser Runtime CLI\n\nUsage:\n  brs status\n  brs health\n  brs tab-audit\n  brs tab-reconcile\n  brs leases\n  brs jobs [--status success]\n  brs job <jobId>\n  brs artifacts [--leaseId <leaseId>] [--kind screenshot]\n  brs artifact <artifactId>\n  brs artifact-download <artifactId> <outputPath>\n  brs artifact-delete <artifactId>\n  brs cleanup-artifacts [--olderThanDays 7] [--dryRun false]\n  brs acquire --agentId demo-agent --taskId smoke --domain example.com\n  brs open <leaseId> <url>\n  brs ui <tabId> <move|click|type|press|scroll|wait-for> [--selector input[name=q]] [--text query] [--key Enter]\n  brs fetch <url> [--agent demo-agent] [--task smoke] [--screenshot] [--full-page] [--keep-open] [--humanize enhanced]\n  brs probe-session <platform> [--url <url>] [--include-cookies] [--include-storage-state] [--cooldown false] [--screenshot] [--save-html] [--keep-open] [--humanize off]\n  brs extract <extractor.extract.js> <url> [--agent demo-agent] [--task smoke] [--screenshot] [--save-html] [--humanize enhanced] [--params '{"limit":3}'] [--max-attempts 2]\n  brs release <leaseId> [--keep-tabs]\n\nEnv:\n  BRS_BROKER_URL=${DEFAULT_BROKER}`);
+  console.log(`Agent Browser Runtime CLI\n\nUsage:\n  brs status\n  brs health\n  brs tab-audit\n  brs tab-reconcile\n  brs leases\n  brs jobs [--status success]\n  brs job <jobId>\n  brs artifacts [--leaseId <leaseId>] [--kind screenshot]\n  brs artifact <artifactId>\n  brs artifact-download <artifactId> <outputPath>\n  brs artifact-delete <artifactId>\n  brs cleanup-artifacts [--olderThanDays 7] [--dryRun false]\n  brs acquire --agentId demo-agent --taskId smoke --domain example.com\n  brs open <leaseId> <url>\n  brs ui <tabId> <move|click|type|press|scroll|wait-for> [--selector input[name=q]] [--text query] [--key Enter]\n  brs browse-start <url> [--agent demo-agent] [--task research]\n  brs browse-nav <leaseId> <tabId> <url> [--screenshot] [--humanize enhanced]\n  brs browse-html <leaseId> <tabId>\n  brs browse-screenshot <leaseId> <tabId> [--full-page]\n  brs browse-end <leaseId> [--keep-tabs]\n  brs fetch <url> [--agent demo-agent] [--task smoke] [--screenshot] [--full-page] [--keep-open] [--humanize enhanced] [--lease-id <leaseId> --tab-id <tabId>]\n  brs probe-session <platform> [--url <url>] [--include-cookies] [--include-storage-state] [--cooldown false] [--screenshot] [--save-html] [--keep-open] [--humanize off]\n  brs extract <extractor.extract.js> <url> [--agent demo-agent] [--task smoke] [--screenshot] [--save-html] [--humanize enhanced] [--params '{"limit":3}'] [--max-attempts 2]\n  brs release <leaseId> [--keep-tabs]\n\nEnv:\n  BRS_BROKER_URL=${DEFAULT_BROKER}`);
 }
 
 main().catch((error) => {

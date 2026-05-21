@@ -29,6 +29,7 @@ Endpoints:
 - Before starting work, run `./cli/brs.js status`; `extensionConnected: true` means the Chrome companion extension is ready.
 - If `extensionConnected` stays false, restart with `docker compose up --build -d`.
 - Agents must use broker leases; one lease maps to one real Chrome Tab Group.
+- For continuous work on the same site/task, keep one lease and one tab: start with `browse-start`, then use `browse-nav`, `browse-html`, `browse-screenshot`, and `browse-end`. Repeated one-shot `fetch` calls create extra leases/tab groups and should be reserved for smoke checks or isolated single-page evidence.
 - Broker persists state/artifacts and owns task-level pacing; the extension executes Chrome-native browser operations, including scripted humanized mouse/scroll/pause actions.
 - Default browser identity mode is `trusted-real-browser`: persistent profile, noVNC, tab groups, artifacts, UI primitives, pacing, and no page-level UA/header/WebGL/canvas/audio spoofing or startup-level timezone/AutomationControlled overrides.
 - `./cli/brs.js status` should show `extensionConnected: true`, `stealth.mode: trusted-real-browser`, `stealth.enabled: false`, and `platformPacing`.
@@ -55,6 +56,10 @@ From the project root:
 ```bash
 ./cli/brs.js status
 ./cli/brs.js fetch https://example.com --agent demo-agent --task smoke --screenshot --humanize enhanced
+./cli/brs.js browse-start https://example.com --agent demo-agent --task research
+./cli/brs.js browse-nav <leaseId> <tabId> https://example.com/page-2 --screenshot
+./cli/brs.js browse-html <leaseId> <tabId>
+./cli/brs.js browse-end <leaseId>
 ./cli/brs.js probe-session linkedin --humanize off --cooldown false
 ./cli/brs.js extract example.extract.js https://example.com --agent demo-agent --task extractor-smoke --screenshot --save-html
 ./cli/brs.js acquire --agentId demo-agent --taskId research --domain example.com

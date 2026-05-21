@@ -103,6 +103,23 @@ export class Store {
       .run(tab.id, tab.leaseId, tab.url ?? null, tab.title ?? null, tab.status, tab.createdAt);
   }
 
+  getTab(tabId) {
+    return mapTab(this.db.prepare('SELECT * FROM tabs WHERE id = ?').get(tabId));
+  }
+
+  updateTab(tabId, patch) {
+    const fields = [];
+    const args = [];
+    for (const [key, value] of Object.entries(patch)) {
+      const column = key.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`);
+      fields.push(`${column} = ?`);
+      args.push(value);
+    }
+    if (!fields.length) return;
+    args.push(tabId);
+    this.db.prepare(`UPDATE tabs SET ${fields.join(', ')} WHERE id = ?`).run(...args);
+  }
+
   closeTab(tabId) {
     this.db.prepare('UPDATE tabs SET status = ?, closed_at = ? WHERE id = ?').run('closed', new Date().toISOString(), tabId);
   }

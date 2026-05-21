@@ -137,6 +137,10 @@ Create a tab in the lease's real Chrome Tab Group.
 
 Navigate an owned tab.
 
+### `POST /tabs/:tabId/fetch-page`
+
+Navigate an owned tab, capture HTML, and optionally capture a screenshot without allocating a new lease or Chrome Tab Group. This is the broker-level primitive for continuous same-site browsing sessions.
+
 ### `POST /tabs/:tabId/html`
 
 Capture `document.documentElement.outerHTML` into an artifact.
@@ -172,13 +176,15 @@ Extractor scripts receive a tab-bound `ui` helper with the same actions: `ui.mov
 
 ### `POST /jobs/fetch-page`
 
-One-shot MVP workflow:
+One-shot workflow for smoke tests and isolated page evidence:
 
 1. acquire lease
 2. create grouped tab
 3. navigate/wait
 4. capture HTML and optional screenshot
 5. optionally release/close
+
+For multi-page exploration within one site or one user task, reuse a lease/tab with `POST /tabs/:tabId/fetch-page` or the CLI `browse-*` commands instead of issuing repeated one-shot fetch jobs.
 
 ### `POST /sessions/probe`
 
@@ -269,6 +275,9 @@ cp .env.example .env
 docker compose up --build -d
 ./cli/brs.js status
 ./cli/brs.js fetch https://example.com --agent demo-agent --task smoke --screenshot --humanize enhanced
+./cli/brs.js browse-start https://example.com --agent demo-agent --task research
+./cli/brs.js browse-nav <leaseId> <tabId> https://example.com/page-2 --screenshot
+./cli/brs.js browse-end <leaseId>
 ```
 
 Expected:

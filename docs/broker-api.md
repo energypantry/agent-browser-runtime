@@ -75,6 +75,19 @@ Open a tab in the lease's real Chrome Tab Group.
 
 Navigate a tab.
 
+### `POST /tabs/:tabId/fetch-page`
+
+Navigate an already tracked tab, then capture HTML and optionally a screenshot without creating a new lease or Chrome Tab Group.
+
+```json
+{
+  "leaseId": "lease_123",
+  "url": "https://example.com/search?q=route",
+  "screenshot": false,
+  "humanize": "standard"
+}
+```
+
 ### `POST /tabs/:tabId/html`
 
 Capture `document.documentElement.outerHTML` and write an HTML artifact.
@@ -97,6 +110,7 @@ Return one job plus logs and lease artifacts.
 ### `POST /jobs/fetch-page`
 
 One-shot workflow: create lease, open grouped tab, capture HTML, optionally screenshot, then release/close unless `keepOpen=true`.
+For continuous same-site exploration, prefer `/tabs/:tabId/fetch-page` or the CLI `browse-*` commands so repeated navigation reuses the same lease and tab.
 
 ### `POST /sessions/probe`
 

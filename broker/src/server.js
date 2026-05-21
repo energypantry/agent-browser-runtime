@@ -183,10 +183,47 @@ app.post('/tabs/:tabId/navigate', async (request) => {
   const result = await extension.call('tabs.navigate', {
     tabId,
     url: String(body.url),
+    active: Boolean(body.active),
     waitUntilCompleteMs: readPositiveNumber(body.waitUntilCompleteMs, 15000),
   }, { timeoutMs: readPositiveNumber(body.timeoutMs, 45000) });
+  store.updateTab(tabId, { url: result.tab?.url || String(body.url), title: result.tab?.title || null, status: 'open' });
   await humanizeTab(tabId, body, 'navigate');
   return result;
+});
+
+app.post('/tabs/:tabId/fetch-page', async (request, reply) => {
+  const tabId = Number(request.params.tabId);
+  const body = request.body || {};
+  if (!body.url) return reply.code(400).send({ ok: false, error: 'url is required' });
+
+  const trackedTab = store.getTab(tabId);
+  if (!trackedTab || trackedTab.status === 'closed') return reply.code(404).send({ ok: false, error: 'TAB_NOT_FOUND' });
+  if (body.leaseId && trackedTab.leaseId !== body.leaseId) {
+    return reply.code(409).send({ ok: false, error: 'TAB_LEASE_MISMATCH', tabLeaseId: trackedTab.leaseId, leaseId: body.leaseId });
+  }
+
+  const result = await extension.call('tabs.navigate', {
+    tabId,
+    url: String(body.url),
+    active: Boolean(body.active),
+    waitUntilCompleteMs: readPositiveNumber(body.waitUntilCompleteMs, 15000),
+  }, { timeoutMs: readPositiveNumber(body.timeoutMs, 60000) });
+  store.updateTab(tabId, { url: result.tab?.url || String(body.url), title: result.tab?.title || null, status: 'open' });
+
+  await humanizeTab(tabId, body, 'navigate');
+  const htmlResult = await extension.call('page.html', { tabId }, { timeoutMs: readPositiveNumber(body.htmlTimeoutMs, 30000) });
+  const artifacts = [await writeArtifact({ leaseId: trackedTab.leaseId, tabId, kind: 'html', ext: 'html', mimeType: 'text/html', data: htmlResult.html || '' })];
+  if (body.screenshot !== false) {
+    await humanizeTab(tabId, body, 'before-screenshot');
+    const shot = await extension.call('screenshot.capture', {
+      tabId,
+      fullPage: Boolean(body.fullPage),
+      format: body.format || 'jpeg',
+      quality: readPositiveNumber(body.quality, 80),
+    }, { timeoutMs: readPositiveNumber(body.screenshotTimeoutMs, 45000) });
+    artifacts.push(await writeArtifact({ leaseId: trackedTab.leaseId, tabId, kind: 'screenshot', ext: shot.format === 'png' ? 'png' : 'jpg', mimeType: shot.format === 'png' ? 'image/png' : 'image/jpeg', base64: shot.data }));
+  }
+  return { lease: store.getLease(trackedTab.leaseId), tab: result.tab, artifacts, reusedTab: true };
 });
 
 app.post('/tabs/:tabId/html', async (request) => {

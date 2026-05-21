@@ -31,6 +31,7 @@ Endpoints:
 
 - Run `./cli/brs.js status` before browser work. `extensionConnected: true` means the companion extension is ready.
 - Use broker leases; one lease maps to one real Chrome Tab Group.
+- For continuous work on the same site/task, keep one lease and one tab: start with `browse-start`, then use `browse-nav`, `browse-html`, `browse-screenshot`, and `browse-end`. Repeated one-shot `fetch` calls create extra leases/tab groups and should be reserved for smoke checks or isolated single-page evidence.
 - Keep at least 70 ms between broker-driven browser requests.
 - For unknown or sensitive platforms, serialize per target site and use seconds-to-minutes cooldowns.
 - Use noVNC for login, Captcha, MFA, sliders, and account-safety checks.
@@ -52,6 +53,10 @@ This rule applies to every target site, not only LinkedIn.
 ```bash
 ./cli/brs.js status
 ./cli/brs.js fetch https://example.com --agent demo-agent --task smoke --screenshot --humanize enhanced
+./cli/brs.js browse-start https://example.com --agent demo-agent --task research
+./cli/brs.js browse-nav <leaseId> <tabId> https://example.com/page-2 --screenshot
+./cli/brs.js browse-html <leaseId> <tabId>
+./cli/brs.js browse-end <leaseId>
 ./cli/brs.js probe-session linkedin --humanize off --cooldown false
 ./cli/brs.js extract example.extract.js https://example.com --agent demo-agent --task extractor-smoke --screenshot --save-html
 ./cli/brs.js acquire --agentId demo-agent --taskId research --domain example.com

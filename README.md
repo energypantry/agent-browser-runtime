@@ -62,6 +62,24 @@ The default runtime preset is `trusted-real-browser`: the browser keeps its real
 It also reports the loaded runtime fingerprint summary from the extension when a fingerprint profile is generated.
 The `BRS_*` environment prefix is kept as the stable Browser Runtime Service config surface.
 
+## Continuous browsing
+
+Use a continuous browse lease for multi-step exploration on one site. This keeps one real Chrome Tab Group and reuses the same tab across searches, detail pages, and evidence captures.
+
+```bash
+./cli/brs.js browse-start https://www.mafengwo.cn/ --agent codex --task mafengwo-research
+./cli/brs.js browse-nav <leaseId> <tabId> 'https://www.mafengwo.cn/search/q.php?q=武汉%20攻略'
+./cli/brs.js browse-html <leaseId> <tabId>
+./cli/brs.js browse-screenshot <leaseId> <tabId> --full-page
+./cli/brs.js browse-end <leaseId>
+```
+
+`brs fetch` remains the one-shot path for smoke checks and single-page evidence. When a workflow already owns a lease and tab, it can reuse them without creating a new group:
+
+```bash
+./cli/brs.js fetch https://example.com --lease-id <leaseId> --tab-id <tabId> --screenshot
+```
+
 ## Browser identity modes
 
 The default mode is `trusted-real-browser`. It favors high-trust site compatibility by avoiding page-level spoofing and keeping browser identity surfaces native to the running browser, without startup-level timezone or AutomationControlled overrides. This is the right baseline for login, checkout, account-safety, and other sensitive flows.
