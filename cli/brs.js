@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import { writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { basename, extname } from 'node:path';
 
 const DEFAULT_BROKER = process.env.BRS_BROKER_URL || 'http://127.0.0.1:17890';
 const [cmd, ...args] = process.argv.slice(2);
@@ -113,14 +114,16 @@ async function main() {
   if (cmd === 'ui') {
     const tabId = args[0];
     const action = normalizeUiAction(args[1]);
-    if (!tabId || !action) throw new Error('ui requires <tabId> <move|click|type|press|scroll|wait-for>');
-    return print(await api('POST', `/tabs/${encodeURIComponent(tabId)}/ui/${action}`, parseOptions(args.slice(2))));
+    if (!tabId || !action) throw new Error('ui requires <tabId> <move|click|type|press|scroll|wait-for|upload-file>');
+    const options = parseOptions(args.slice(2));
+    return print(await api('POST', `/tabs/${encodeURIComponent(tabId)}/ui/${action}`, attachFilePayload(options)));
   }
   if (cmd === 'extract') {
     const extractor = args[0];
     const url = args[1];
     if (!extractor || !url) throw new Error('extract requires <extractor> <url>');
     const options = parseOptions(args.slice(2));
+    const params = attachUploadFileParam(parseJsonOption(options.params || options.paramsJson, {}), options);
     return print(await api('POST', '/jobs/extract', {
       extractor,
       url,
@@ -133,7 +136,7 @@ async function main() {
       active: Boolean(options.active),
       waitUntilCompleteMs: options.waitMs || options.waitUntilCompleteMs,
       humanize: options.humanize || options.humanizeLevel,
-      params: parseJsonOption(options.params || options.paramsJson, {}),
+      params,
       maxAttempts: options.maxAttempts,
       retries: options.retries,
       retry: options.retry,
@@ -249,9 +252,50 @@ function inferDomain(url) {
 
 function normalizeUiAction(action) {
   const normalized = String(action || '').replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`).toLowerCase();
-  const aliases = { waitfor: 'wait-for', wait: 'wait-for' };
+  const aliases = { waitfor: 'wait-for', wait: 'wait-for', upload: 'upload-file', uploadfile: 'upload-file' };
   const value = aliases[normalized] || normalized;
-  return ['move', 'click', 'type', 'press', 'scroll', 'wait-for'].includes(value) ? value : null;
+  return ['move', 'click', 'type', 'press', 'scroll', 'wait-for', 'upload-file'].includes(value) ? value : null;
+}
+
+function attachUploadFileParam(params, options) {
+  const upload = buildFilePayload(options);
+  if (!upload) return params;
+  const key = options.fileParam || options.uploadFileParam || 'uploadFile';
+  return { ...params, [key]: upload };
+}
+
+function attachFilePayload(options) {
+  const upload = buildFilePayload(options);
+  if (!upload) return options;
+  const copy = { ...options, file: upload };
+  delete copy.filePath;
+  delete copy.uploadFile;
+  delete copy.uploadFilePath;
+  return copy;
+}
+
+function buildFilePayload(options) {
+  const filePath = options.file || options.filePath || options.uploadFile || options.uploadFilePath;
+  if (!filePath || filePath === true) return null;
+  const bytes = readFileSync(String(filePath));
+  return {
+    name: options.fileName || basename(String(filePath)),
+    mimeType: options.mimeType || mimeTypeForPath(String(filePath)),
+    base64: bytes.toString('base64'),
+    lastModified: Date.now(),
+  };
+}
+
+function mimeTypeForPath(filePath) {
+  const ext = extname(filePath).toLowerCase();
+  if (ext === '.png') return 'image/png';
+  if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg';
+  if (ext === '.webp') return 'image/webp';
+  if (ext === '.gif') return 'image/gif';
+  if (ext === '.avif') return 'image/avif';
+  if (ext === '.svg') return 'image/svg+xml';
+  if (ext === '.pdf') return 'application/pdf';
+  return 'application/octet-stream';
 }
 
 function coerce(value) {
@@ -263,7 +307,7 @@ function coerce(value) {
 
 function print(obj) { console.log(JSON.stringify(obj, null, 2)); }
 function help() {
-  console.log(`Agent Browser Runtime CLI\n\nUsage:\n  brs status\n  brs health\n  brs tab-audit\n  brs tab-reconcile\n  brs leases\n  brs jobs [--status success]\n  brs job <jobId>\n  brs artifacts [--leaseId <leaseId>] [--kind screenshot]\n  brs artifact <artifactId>\n  brs artifact-download <artifactId> <outputPath>\n  brs artifact-delete <artifactId>\n  brs cleanup-artifacts [--olderThanDays 7] [--dryRun false]\n  brs acquire --agentId demo-agent --taskId smoke --domain example.com\n  brs open <leaseId> <url>\n  brs ui <tabId> <move|click|type|press|scroll|wait-for> [--selector input[name=q]] [--text query] [--key Enter]\n  brs browse-start <url> [--agent demo-agent] [--task research]\n  brs browse-nav <leaseId> <tabId> <url> [--screenshot] [--humanize enhanced]\n  brs browse-html <leaseId> <tabId>\n  brs browse-screenshot <leaseId> <tabId> [--full-page]\n  brs browse-end <leaseId> [--keep-tabs]\n  brs fetch <url> [--agent demo-agent] [--task smoke] [--screenshot] [--full-page] [--keep-open] [--humanize enhanced] [--lease-id <leaseId> --tab-id <tabId>]\n  brs probe-session <platform> [--url <url>] [--include-cookies] [--include-storage-state] [--cooldown false] [--screenshot] [--save-html] [--keep-open] [--humanize off]\n  brs extract <extractor.extract.js> <url> [--agent demo-agent] [--task smoke] [--screenshot] [--save-html] [--humanize enhanced] [--params '{"limit":3}'] [--max-attempts 2]\n  brs release <leaseId> [--keep-tabs]\n\nEnv:\n  BRS_BROKER_URL=${DEFAULT_BROKER}`);
+  console.log(`Agent Browser Runtime CLI\n\nUsage:\n  brs status\n  brs health\n  brs tab-audit\n  brs tab-reconcile\n  brs leases\n  brs jobs [--status success]\n  brs job <jobId>\n  brs artifacts [--leaseId <leaseId>] [--kind screenshot]\n  brs artifact <artifactId>\n  brs artifact-download <artifactId> <outputPath>\n  brs artifact-delete <artifactId>\n  brs cleanup-artifacts [--olderThanDays 7] [--dryRun false]\n  brs acquire --agentId demo-agent --taskId smoke --domain example.com\n  brs open <leaseId> <url>\n  brs ui <tabId> <move|click|type|press|scroll|wait-for|upload-file> [--selector input[name=q]] [--text query] [--key Enter] [--file /path/to/file]\n  brs browse-start <url> [--agent demo-agent] [--task research]\n  brs browse-nav <leaseId> <tabId> <url> [--screenshot] [--humanize enhanced]\n  brs browse-html <leaseId> <tabId>\n  brs browse-screenshot <leaseId> <tabId> [--full-page]\n  brs browse-end <leaseId> [--keep-tabs]\n  brs fetch <url> [--agent demo-agent] [--task smoke] [--screenshot] [--full-page] [--keep-open] [--humanize enhanced] [--lease-id <leaseId> --tab-id <tabId>]\n  brs probe-session <platform> [--url <url>] [--include-cookies] [--include-storage-state] [--cooldown false] [--screenshot] [--save-html] [--keep-open] [--humanize off]\n  brs extract <extractor.extract.js> <url> [--agent demo-agent] [--task smoke] [--screenshot] [--save-html] [--humanize enhanced] [--params '{"limit":3}'] [--file /path/to/file] [--file-param uploadFile] [--max-attempts 2]\n  brs release <leaseId> [--keep-tabs]\n\nEnv:\n  BRS_BROKER_URL=${DEFAULT_BROKER}`);
 }
 
 main().catch((error) => {

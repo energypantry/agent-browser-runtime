@@ -91,6 +91,7 @@ async function dispatch(method, params) {
     case 'ui.press': return uiPress(params);
     case 'ui.scroll': return uiScroll(params);
     case 'ui.waitFor': return uiWaitFor(params);
+    case 'ui.uploadFile': return uiUploadFile(params);
     default: throw new Error(`Unsupported method: ${method}`);
   }
 }
@@ -656,6 +657,50 @@ async function uiWaitFor(params) {
   return { ok: false, action: 'waitFor', found: false, target: last, waitedMs: Date.now() - startedAt };
 }
 
+async function uiUploadFile(params) {
+  const tabId = Number(params.tabId);
+  const selector = params.selector || params.fileSelector || 'input[type="file"]';
+  const file = normalizeUploadFile(params.file || params);
+  if (!file.base64) throw new Error('uploadFile requires file.base64 or base64');
+  await attachDebugger(tabId);
+  const result = await chrome.scripting.executeScript({
+    target: { tabId },
+    args: [selector, file],
+    func: (selectorArg, fileArg) => {
+      const input = document.querySelector(selectorArg);
+      if (!input) return { ok: false, error: `file input not found: ${selectorArg}` };
+      if (!(input instanceof HTMLInputElement) || input.type !== 'file') {
+        return { ok: false, error: `selector is not an input[type=file]: ${selectorArg}` };
+      }
+
+      const binary = atob(fileArg.base64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+      const blob = new Blob([bytes], { type: fileArg.mimeType || 'application/octet-stream' });
+      const upload = new File([blob], fileArg.name || 'upload.bin', {
+        type: fileArg.mimeType || blob.type,
+        lastModified: fileArg.lastModified || Date.now(),
+      });
+      const transfer = new DataTransfer();
+      transfer.items.add(upload);
+      input.files = transfer.files;
+      input.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+      return {
+        ok: true,
+        action: 'uploadFile',
+        selector: selectorArg,
+        fileName: upload.name,
+        mimeType: upload.type,
+        files: input.files.length,
+      };
+    },
+  });
+  const value = result?.[0]?.result || { ok: false, error: 'uploadFile script returned no result' };
+  if (!value.ok) throw new Error(value.error || 'uploadFile failed');
+  return value;
+}
+
 function normalizeHumanizePolicy(policy) {
   const level = String(policy.level || 'standard').toLowerCase();
   const multiplier = level === 'enhanced' ? 1.35 : level === 'minimal' ? 0.55 : 1;
@@ -842,6 +887,27 @@ function sanitizePoint(x, y) {
 function normalizeMouseButton(button) {
   const normalized = String(button || 'left').toLowerCase();
   return ['left', 'right', 'middle', 'none'].includes(normalized) ? normalized : 'left';
+}
+
+function normalizeUploadFile(input = {}) {
+  const dataUrl = input.dataUrl || input.fileDataUrl || '';
+  if (dataUrl) {
+    const match = String(dataUrl).match(/^data:([^;,]+)?(;base64)?,(.*)$/);
+    if (!match) throw new Error('dataUrl must be a valid data URL');
+    const isBase64 = Boolean(match[2]);
+    return {
+      name: String(input.name || input.fileName || 'upload.bin'),
+      mimeType: String(input.mimeType || match[1] || 'application/octet-stream'),
+      base64: isBase64 ? match[3] : btoa(decodeURIComponent(match[3])),
+      lastModified: Number(input.lastModified || Date.now()),
+    };
+  }
+  return {
+    name: String(input.name || input.fileName || 'upload.bin'),
+    mimeType: String(input.mimeType || 'application/octet-stream'),
+    base64: String(input.base64 || input.fileBase64 || ''),
+    lastModified: Number(input.lastModified || Date.now()),
+  };
 }
 
 function keyDescriptor(key) {

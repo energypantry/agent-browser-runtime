@@ -88,7 +88,7 @@ The default mode is `trusted-real-browser`. It favors high-trust site compatibil
 - Real Chrome Tab Groups so concurrent agents have visible, lease-scoped workspaces.
 - Platform cooldowns plus per-job humanized warmup, mousemove, scroll, and pause primitives.
 - All-site browser interaction discipline: after the initial exact URL/probe entry point, agents must complete workflows through visible UI controls with keyboard input, cursor movement/clicking, scrolling, hover, and pauses instead of synthesized URL jumps, querystring shortcuts, DOM-click dispatch, or backend/API shortcuts.
-- Runtime UI action primitives exposed through `/tabs/:tabId/ui/*` and extractor `ui` helpers: `move`, `click`, `type`, `press`, `scroll`, and `waitFor`.
+- Runtime UI action primitives exposed through `/tabs/:tabId/ui/*` and extractor `ui` helpers: `move`, `click`, `type`, `press`, `scroll`, `waitFor`, and `uploadFile`.
 - Optional `legacy-js` mode: CDP header/UA/locale/timezone overrides plus main-world patches for webdriver, languages, platform, vendor, plugins/mimeTypes, Chrome runtime stubs, permissions, media codecs, WebGL, canvas, and audio surfaces.
 - Optional `patched-browser` mode: use a mounted browser binary such as fingerprint Chromium and let the browser backend own identity changes instead of extension injection.
 - Optional startup-level TLS gateway proxy with QUIC disabled on the proxied path and health/stats surfaced in `status`; it is opt-in by default to avoid transport/browser mismatches.

@@ -14,8 +14,9 @@ const leaseDbPath = process.env.LEASE_DB_PATH || '/data/leases.sqlite';
 const artifactsDir = process.env.ARTIFACTS_DIR || '/artifacts';
 const extractorsDir = process.env.EXTRACTORS_DIR || '/extractors';
 const defaultHumanizeLevel = String(process.env.BOT_HUMANIZE_LEVEL || 'standard').trim().toLowerCase();
+const bodyLimit = Number(process.env.BROKER_BODY_LIMIT_BYTES || 16 * 1024 * 1024);
 
-const app = Fastify({ logger: true });
+const app = Fastify({ logger: true, bodyLimit });
 await app.register(websocket);
 
 const store = new Store(leaseDbPath);
@@ -254,6 +255,7 @@ app.post('/tabs/:tabId/ui/type', async (request) => runUiAction(Number(request.p
 app.post('/tabs/:tabId/ui/press', async (request) => runUiAction(Number(request.params.tabId), 'press', request.body || {}));
 app.post('/tabs/:tabId/ui/scroll', async (request) => runUiAction(Number(request.params.tabId), 'scroll', request.body || {}));
 app.post('/tabs/:tabId/ui/wait-for', async (request) => runUiAction(Number(request.params.tabId), 'waitFor', request.body || {}));
+app.post('/tabs/:tabId/ui/upload-file', async (request) => runUiAction(Number(request.params.tabId), 'uploadFile', request.body || {}));
 
 app.post('/jobs/extract', async (request, reply) => {
   const body = request.body || {};
@@ -538,6 +540,7 @@ function createTabUi(tabId, defaults = {}) {
     press: (keyOrParams = {}) => runUiAction(tabId, 'press', withDefaults(typeof keyOrParams === 'string' ? { key: keyOrParams } : keyOrParams)),
     scroll: (params = {}) => runUiAction(tabId, 'scroll', withDefaults(params)),
     waitFor: (params = {}) => runUiAction(tabId, 'waitFor', withDefaults(params)),
+    uploadFile: (params = {}) => runUiAction(tabId, 'uploadFile', withDefaults(params)),
     html: async (params = {}) => {
       await humanizeTab(tabId, withDefaults(params), 'before-html');
       return extension.call('page.html', { tabId }, { timeoutMs: readPositiveNumber(params.timeoutMs, 30000) });

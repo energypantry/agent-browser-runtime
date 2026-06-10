@@ -171,8 +171,9 @@ The broker exposes first-class UI actions for site workflows after the initial e
 - `POST /tabs/:tabId/ui/press` with `{ "key": "Enter" }`
 - `POST /tabs/:tabId/ui/scroll` with `{ "direction": "down", "count": 2 }` or `{ "deltaY": 650 }`
 - `POST /tabs/:tabId/ui/wait-for` with `{ "selector": ".result", "timeoutMs": 10000 }` or `{ "targetText": "Results" }`
+- `POST /tabs/:tabId/ui/upload-file` with `{ "selector": "input[type=file]", "file": { "name": "photo.jpg", "mimeType": "image/jpeg", "base64": "..." } }`
 
-Extractor scripts receive a tab-bound `ui` helper with the same actions: `ui.move`, `ui.click`, `ui.type`, `ui.press`, `ui.scroll`, and `ui.waitFor`. They also receive `ui.html()` and `ui.screenshot()` helpers for post-interaction evidence capture.
+Extractor scripts receive a tab-bound `ui` helper with the same actions: `ui.move`, `ui.click`, `ui.type`, `ui.press`, `ui.scroll`, `ui.waitFor`, and `ui.uploadFile`. They also receive `ui.html()` and `ui.screenshot()` helpers for post-interaction evidence capture.
 
 ### `POST /jobs/fetch-page`
 

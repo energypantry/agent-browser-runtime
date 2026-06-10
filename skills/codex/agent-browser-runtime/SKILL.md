@@ -46,7 +46,7 @@ This rule applies to every target site, not only LinkedIn.
 - Direct navigation is reserved for initial entry to an exact user-provided URL, platform/session probes, or returning to a previously captured exact URL for inspection.
 - After entry, complete site workflows through the visible UI: type search terms and form values with keyboard input, move the cursor to controls before clicking, scroll/hover/pause naturally, and let the site update state through its normal front-end flow.
 - For search, filters, pagination, profile/result selection, login, checkout, and account-safety flows, use real UI controls instead of synthesized destination/search URLs, querystring mutation, `location` jumps, dispatched DOM clicks, or backend/API shortcuts.
-- Generated extractor scripts should use the runtime `ui` helper (`ui.type`, `ui.click`, `ui.press`, `ui.scroll`, `ui.waitFor`, `ui.move`) for in-site workflows; keep direct URL navigation limited to the initial exact entry URL or an explicitly captured inspection URL.
+- Generated extractor scripts should use the runtime `ui` helper (`ui.type`, `ui.click`, `ui.press`, `ui.scroll`, `ui.waitFor`, `ui.move`, `ui.uploadFile`) for in-site workflows; keep direct URL navigation limited to the initial exact entry URL or an explicitly captured inspection URL.
 - If the needed UI action is not exposed by the broker or extension yet, use noVNC manual handoff or add a real browser primitive before automating that workflow.
 
 ## Quick Commands
@@ -66,6 +66,37 @@ From the project root:
 ./cli/brs.js open <leaseId> https://example.com
 ./cli/brs.js release <leaseId>
 ```
+
+## Built-in Extractors
+
+The runtime repo ships extractor scripts under `extractors/`; this local Codex skill also mirrors reusable scripts under `/Users/zhi/.codex/skills/agent-browser-runtime/extractors/`.
+
+AliExpress product search extractor is available as `extractors/aliexpress.extract.js`. It uses one file with mode-specific params so image-based and text-based collection return the same `products[]` fields: product image URL, title, price, sales text/count, product URL, precision score, and match reason.
+
+Image-search result collection:
+
+```bash
+./cli/brs.js extract aliexpress.extract.js \
+  'https://www.aliexpress.com/' \
+  --params '{"mode":"imageSearch","maxItems":30,"requireSales":true,"filter":"women blazer double breasted gold buttons"}' \
+  --file /absolute/path/to/reference-image.png \
+  --agent codex --task aliexpress-image-search --humanize standard --active true --save-html
+```
+
+Text-search collection:
+
+```bash
+./cli/brs.js extract aliexpress.extract.js \
+  'https://www.aliexpress.com/' \
+  --params '{"mode":"textSearch","query":"women double breasted blazer gold buttons","maxItems":30,"requireSales":true}' \
+  --agent codex --task aliexpress-text-search --humanize standard --save-html
+```
+
+Modes:
+
+- `imageSearch`: when `--file` / `params.uploadFile` is present, opens AliExpress image search, uploads the reference image with `ui.uploadFile`, waits for results, then extracts sales-backed product cards. It can also extract from an existing image-search results URL.
+- `textSearch`: types `params.query` into the site search box with runtime UI helpers, submits it, scrolls, then extracts product cards.
+- `auto`: infers `textSearch` when `query` is present, otherwise uses `imageSearch` for image-search URLs.
 
 ## Modes
 
