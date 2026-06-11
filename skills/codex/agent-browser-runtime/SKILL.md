@@ -98,6 +98,34 @@ Modes:
 - `textSearch`: types `params.query` into the site search box with runtime UI helpers, submits it, scrolls, then extracts product cards.
 - `auto`: infers `textSearch` when `query` is present, otherwise uses `imageSearch` for image-search URLs.
 
+Taobao product search extractor is available as `extractors/taobao.extract.js`. It keeps the same product-search output contract as the AliExpress extractor: product image URL, title, price, sales text/count, shop name, product URL, precision score, and match reason.
+
+Taobao image-search result collection:
+
+```bash
+./cli/brs.js extract taobao.extract.js \
+  'https://www.taobao.com/' \
+  --params '{"mode":"imageSearch","maxItems":40,"requireSales":true,"filter":"女士 双排扣 金扣 西装外套"}' \
+  --file /absolute/path/to/reference-image.png \
+  --agent codex --task taobao-image-search --humanize standard --active true --save-html
+```
+
+Taobao text-search result collection:
+
+```bash
+./cli/brs.js extract taobao.extract.js \
+  'https://www.taobao.com/' \
+  --params '{"mode":"textSearch","query":"女士 双排扣 金扣 西装外套","maxItems":40,"requireSales":true}' \
+  --agent codex --task taobao-text-search --humanize standard --active true --save-html
+```
+
+Taobao extractor modes:
+
+- `imageSearch`: opens the visible Taobao image-search upload flow with runtime UI helpers, uploads the reference image with `ui.uploadFile`, waits for results, scrolls, then extracts sales-backed product cards.
+- `textSearch`: types `params.query` into Taobao search with runtime UI helpers, submits it, scrolls, then extracts product cards.
+- `auto`: infers `textSearch` when `query` is present, otherwise uses `imageSearch` when an upload file or image-search URL is present.
+- If Taobao shows login, captcha, or safety verification, use noVNC for manual handoff and rerun in the same persisted browser profile.
+
 ## Modes
 
 1. `explore`: agent uses a leased tab group to understand a new site.

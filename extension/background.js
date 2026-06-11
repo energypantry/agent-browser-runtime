@@ -683,15 +683,41 @@ async function uiUploadFile(params) {
       });
       const transfer = new DataTransfer();
       transfer.items.add(upload);
+      const beforeEventsFiles = transfer.files.length;
+      try { input.focus({ preventScroll: true }); } catch (_) {}
       input.files = transfer.files;
       input.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
       input.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+
+      const eventTargets = [input, input.parentElement, document.activeElement, document.body, document, window]
+        .filter((target, index, all) => target && all.indexOf(target) === index);
+      for (const target of eventTargets) {
+        for (const type of ['dragenter', 'dragover', 'drop']) {
+          try {
+            target.dispatchEvent(new DragEvent(type, {
+              bubbles: true,
+              cancelable: true,
+              dataTransfer: transfer,
+            }));
+          } catch (_) {}
+        }
+      }
+
+      for (const target of eventTargets) {
+        try {
+          const paste = new Event('paste', { bubbles: true, cancelable: true });
+          Object.defineProperty(paste, 'clipboardData', { value: transfer });
+          target.dispatchEvent(paste);
+        } catch (_) {}
+      }
+
       return {
         ok: true,
         action: 'uploadFile',
         selector: selectorArg,
         fileName: upload.name,
         mimeType: upload.type,
+        inputFilesBeforeEvents: beforeEventsFiles,
         files: input.files.length,
       };
     },

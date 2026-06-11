@@ -122,6 +122,21 @@ Current examples:
 - `example.extract.js` — minimal HTML/title extraction smoke test.
 - `failing.extract.js` — intentional failure fixture for retry and error artifacts.
 - `reddit.extract.js` — public Reddit platform example. Feed URLs return thread summaries; thread URLs return post text plus visible comments, with optional UI-driven comment expansion.
+- `aliexpress.extract.js` — AliExpress product search example with `imageSearch`, `textSearch`, and `auto` modes.
+- `taobao.extract.js` — Taobao product search example with `imageSearch`, `textSearch`, and `auto` modes. It returns product image URL, title, price, sales text/count, shop name, product URL, precision score, and match reason.
+
+Example Taobao image-search run:
+
+```bash
+./cli/brs.js extract taobao.extract.js 'https://www.taobao.com/' \
+  --agent demo-agent \
+  --task taobao-image-search \
+  --params '{"mode":"imageSearch","maxItems":40,"requireSales":true,"filter":"女士 双排扣 金扣 西装外套"}' \
+  --file /absolute/path/to/reference-image.png \
+  --humanize standard \
+  --active true \
+  --save-html
+```
 
 Example Reddit feed run:
 
